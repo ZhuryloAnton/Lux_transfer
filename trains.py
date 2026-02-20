@@ -1,8 +1,31 @@
-"""Train arrivals at Gare Centrale Luxembourg from official GTFS timetable.
+"""Train arrivals at Gare Centrale Luxembourg — Luxembourg GTFS timetable.
 
-Data source: Luxembourg government open data (data.public.lu)
-Only arrivals at Gare Centrale Luxembourg are returned — no departures,
-no other stations, no transit-only rows.
+Data source
+-----------
+Luxembourg Government open data portal (CC0):
+  https://data.public.lu/api/1/datasets/horaires-et-arrets-des-transport-publics-gtfs/
+
+Why GTFS only (no real-time API)
+---------------------------------
+The TfL Luxembourg API (api.tfl.lu) only exposes a *Departures* endpoint
+  GET /v1/StopPoint/Departures/{stopId}
+which returns trains **leaving** a stop.  The Arrivals endpoint
+  GET /v1/StopPoint/Arrivals/{stopId}
+is explicitly marked **UNAVAILABLE** in the official TfL Luxembourg API docs.
+
+GTFS stop_id for "Luxembourg, Gare Centrale": "200405035"
+  Verified via api.tfl.lu/v1/StopPoint/around/6.133646/49.60067/100
+
+GTFS caching
+------------
+The zip (~5 MB) is downloaded once and cached in-process for 6 hours.
+An asyncio.Lock prevents concurrent re-downloads.
+
+Holiday handling
+----------------
+calendar.txt  — regular weekly pattern (Mon–Sun flags)
+calendar_dates.txt — exception dates (type 1 = added, type 2 = removed)
+Both are applied so public holidays are handled correctly.
 """
 
 from __future__ import annotations
@@ -14,7 +37,6 @@ import logging
 import time
 import zipfile
 from datetime import datetime, timedelta
-from typing import Any
 
 import pytz
 
@@ -23,241 +45,283 @@ from utils.http import fetch_bytes, fetch_json
 
 logger = logging.getLogger(__name__)
 
-LUX_TZ = pytz.timezone("Europe/Luxembourg")
+_LUX_TZ = pytz.timezone("Europe/Luxembourg")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _GTFS_DATASET_URL = (
     "https://data.public.lu/api/1/datasets/"
     "horaires-et-arrets-des-transport-publics-gtfs/"
 )
 
-# Official stop_id for Gare Centrale Luxembourg in the CFL GTFS feed.
-# This is verified against the published stops.txt file.
-_GARE_CENTRALE_STOP_ID = "000200405060"
+# stop_id in GTFS stops.txt for "Luxembourg, Gare Centrale"
+_STOP_ID = "200405035"
 
-# Only include real train service types — skip bus/tram route names
-_TRAIN_ROUTE_TYPES = frozenset({"ICE", "TGV", "IC", "EC", "RE", "RB", "TER", "IR"})
+# route_short_name values that identify real train services
+# (excludes bus, tram, and other non-rail modes)
+_TRAIN_TYPES = frozenset({
+    "ICE", "TGV", "IC", "EC", "RE", "RB", "TER", "IR", "CRE", "CRN",
+})
 
-# GTFS cache: holds the downloaded ZipFile + a timestamp for staleness checks
-_GTFS_MAX_AGE_SECONDS = 6 * 3_600  # refresh every 6 hours
+# Re-download the GTFS zip if older than 6 hours
+_GTFS_TTL = 6 * 3_600
 
+
+# ── Data source ───────────────────────────────────────────────────────────────
 
 class TrainDataSource:
-    """Real train arrivals at Gare Centrale from Luxembourg GTFS data.
-
-    The GTFS zip is downloaded once and refreshed every 6 hours so the
-    in-memory copy stays current without hammering the open-data portal.
-    Never returns mock or fallback data.
-    """
+    """Scheduled train arrivals at Gare Centrale from the Luxembourg GTFS feed."""
 
     def __init__(self) -> None:
-        self._gtfs_zip: zipfile.ZipFile | None = None
-        self._gtfs_fetched_at: float = 0.0
+        self._zip: zipfile.ZipFile | None = None
+        self._zip_fetched_at: float = 0.0
         self._lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+    # ── Public interface ──────────────────────────────────────────────────────
 
     async def fetch_today(self) -> list[Arrival]:
-        """Future arrivals at Gare Centrale for the rest of today."""
-        now = datetime.now(tz=LUX_TZ)
+        """Return train arrivals at Gare Centrale from now until end of today."""
+        now = datetime.now(tz=_LUX_TZ)
         try:
-            raw = await self._fetch_for_date(now)
+            all_arrivals = await self._for_date(now)
         except Exception as exc:
             logger.error("GTFS fetch failed (today): %s", exc)
             return []
-        return self._filter_future(raw, after=now)
+        result = [a for a in all_arrivals if a.effective_time >= now]
+        logger.info("GTFS today: %d future arrivals at Gare Centrale.", len(result))
+        return result
 
     async def fetch_tomorrow(self) -> list[Arrival]:
-        """All arrivals at Gare Centrale for the whole of tomorrow."""
-        now = datetime.now(tz=LUX_TZ)
+        """Return all train arrivals at Gare Centrale for tomorrow."""
+        now      = datetime.now(tz=_LUX_TZ)
         tomorrow = now + timedelta(days=1)
+        start    = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
         try:
-            raw = await self._fetch_for_date(tomorrow)
+            all_arrivals = await self._for_date(tomorrow)
         except Exception as exc:
             logger.error("GTFS fetch failed (tomorrow): %s", exc)
             return []
-        start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
-        return self._filter_future(raw, after=start)
+        result = [a for a in all_arrivals if a.effective_time >= start]
+        logger.info("GTFS tomorrow: %d arrivals at Gare Centrale.", len(result))
+        return result
 
     async def get_next_tgv(self) -> Arrival | None:
-        """Return the next TGV arrival at Gare Centrale (today or tomorrow)."""
-        now = datetime.now(tz=LUX_TZ)
-        for day_offset in (0, 1):
-            target = now + timedelta(days=day_offset)
+        """Return the next TGV arriving at Gare Centrale (today or tomorrow)."""
+        now = datetime.now(tz=_LUX_TZ)
+        for offset in (0, 1):
+            target = now + timedelta(days=offset)
             try:
-                raw = await self._fetch_for_date(target)
+                arrivals = await self._for_date(target)
             except Exception:
                 continue
             tgvs = [
-                a for a in self._filter_future(raw, after=now)
-                if a.identifier == "TGV"
+                a for a in arrivals
+                if a.identifier == "TGV" and a.effective_time > now
             ]
             if tgvs:
                 return min(tgvs, key=lambda a: a.effective_time)
         return None
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # ── GTFS download & cache ─────────────────────────────────────────────────
 
-    async def _get_gtfs(self) -> zipfile.ZipFile:
-        """Return a cached GTFS ZipFile, refreshing if stale."""
+    async def _get_zip(self) -> zipfile.ZipFile:
+        """Return cached GTFS zip, re-downloading when the TTL has expired."""
         async with self._lock:
-            age = time.monotonic() - self._gtfs_fetched_at
-            if self._gtfs_zip is None or age > _GTFS_MAX_AGE_SECONDS:
-                logger.info("Downloading GTFS zip (age=%.0fs)…", age)
-                self._gtfs_zip = await self._download_gtfs()
-                self._gtfs_fetched_at = time.monotonic()
-                logger.info("GTFS zip downloaded and cached")
-            return self._gtfs_zip
+            age = time.monotonic() - self._zip_fetched_at
+            if self._zip is None or age > _GTFS_TTL:
+                logger.info("Downloading GTFS zip (cache age %.0fs)…", age)
+                self._zip = await self._download_zip()
+                self._zip_fetched_at = time.monotonic()
+                logger.info("GTFS zip cached.")
+            return self._zip
 
-    async def _download_gtfs(self) -> zipfile.ZipFile:
-        """Resolve the GTFS zip URL via the dataset API, then download it."""
+    async def _download_zip(self) -> zipfile.ZipFile:
         dataset = await fetch_json(_GTFS_DATASET_URL, ssl=False)
         if not isinstance(dataset, dict):
-            raise ValueError("GTFS dataset API returned unexpected format")
+            raise ValueError("GTFS dataset API: unexpected response type")
 
-        resources = dataset.get("resources", [])
         zip_url: str | None = None
-        for r in resources:
-            if r.get("format", "").lower() == "zip" and r.get("url"):
-                zip_url = r["url"]
+        for resource in dataset.get("resources", []):
+            fmt = (resource.get("format") or "").lower()
+            url = resource.get("url") or ""
+            if fmt == "zip" and url:
+                zip_url = url
                 break
+
         if not zip_url:
-            raise ValueError("No GTFS zip resource found in dataset API response")
+            raise ValueError("GTFS dataset API: no zip URL found in resources")
 
         content = await fetch_bytes(zip_url, ssl=False)
         return zipfile.ZipFile(io.BytesIO(content))
 
-    async def _fetch_for_date(self, target: datetime) -> list[Arrival]:
-        """Parse GTFS for a specific date and return Arrivals at Gare Centrale."""
-        zf = await self._get_gtfs()
-        target_str = target.strftime("%Y%m%d")
-        weekday = target.strftime("%A").lower()
+    # ── GTFS parsing pipeline ─────────────────────────────────────────────────
 
-        active_services = self._active_services(zf, target_str, weekday)
-        if not active_services:
-            logger.warning("No active GTFS services for %s", target_str)
+    async def _for_date(self, target: datetime) -> list[Arrival]:
+        zf         = await self._get_zip()
+        target_str = target.strftime("%Y%m%d")
+        weekday    = target.strftime("%A").lower()
+
+        services = _active_services(zf, target_str, weekday)
+        if not services:
+            logger.warning("GTFS: no active services for %s.", target_str)
             return []
 
-        route_map = self._read_routes(zf)
-        active_trips = self._active_trips(zf, active_services, route_map)
-        return self._stop_times(zf, active_trips, target_str)
+        route_map = _read_routes(zf)
+        trips     = _active_trips(zf, services, route_map)
+        if not trips:
+            logger.warning("GTFS: no active train trips for %s.", target_str)
+            return []
 
-    @staticmethod
-    def _active_services(
-        zf: zipfile.ZipFile, target_str: str, weekday: str
-    ) -> set[str]:
-        services: set[str] = set()
+        arrivals = _extract_arrivals(zf, trips, target_str)
+        logger.debug("GTFS: %d arrivals at Gare Centrale for %s.", len(arrivals), target_str)
+        return arrivals
+
+
+# ── Pure GTFS parsing functions (no I/O, no state) ───────────────────────────
+
+def _active_services(
+    zf: zipfile.ZipFile, target_str: str, weekday: str
+) -> set[str]:
+    """Return service_ids running on *target_str*.
+
+    Step 1: calendar.txt  — services whose date range includes today and whose
+            weekday flag is set.
+    Step 2: calendar_dates.txt — exception overrides applied on top:
+            exception_type=1 → add service, exception_type=2 → remove service.
+    """
+    services: set[str] = set()
+
+    names = zf.namelist()
+
+    if "calendar.txt" in names:
         with zf.open("calendar.txt") as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-            for row in reader:
+            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
                 start = row.get("start_date", "")
-                end = row.get("end_date", "")
+                end   = row.get("end_date",   "")
                 if start <= target_str <= end and row.get(weekday, "0") == "1":
                     services.add(row["service_id"])
-        return services
 
-    @staticmethod
-    def _read_routes(zf: zipfile.ZipFile) -> dict[str, str]:
-        """Map route_id → route_short_name."""
-        route_map: dict[str, str] = {}
-        with zf.open("routes.txt") as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-            for row in reader:
-                route_map[row["route_id"]] = row.get("route_short_name", "")
-        return route_map
-
-    @staticmethod
-    def _active_trips(
-        zf: zipfile.ZipFile,
-        active_services: set[str],
-        route_map: dict[str, str],
-    ) -> dict[str, dict]:
-        """Map trip_id → trip row, only for active services with train route types."""
-        trips: dict[str, dict] = {}
-        with zf.open("trips.txt") as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-            for row in reader:
-                if row.get("service_id") not in active_services:
+    if "calendar_dates.txt" in names:
+        with zf.open("calendar_dates.txt") as f:
+            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+                if row.get("date") != target_str:
                     continue
-                route_name = route_map.get(row.get("route_id", ""), "")
-                if route_name not in _TRAIN_ROUTE_TYPES:
-                    continue
-                row["_route_name"] = route_name
-                trips[row["trip_id"]] = row
-        return trips
+                sid      = row.get("service_id", "")
+                exc_type = row.get("exception_type", "")
+                if exc_type == "1":
+                    services.add(sid)
+                elif exc_type == "2":
+                    services.discard(sid)
 
-    @staticmethod
-    def _stop_times(
-        zf: zipfile.ZipFile,
-        active_trips: dict[str, dict],
-        date_str: str,
-    ) -> list[Arrival]:
-        """Extract arrival rows at Gare Centrale and build Arrival objects."""
-        arrivals: list[Arrival] = []
-        with zf.open("stop_times.txt") as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-            for row in reader:
-                if row.get("stop_id") != _GARE_CENTRALE_STOP_ID:
-                    continue
-                trip = active_trips.get(row.get("trip_id", ""))
-                if trip is None:
-                    continue
-                arr_str = row.get("arrival_time", "")
-                if not arr_str:
-                    continue
+    return services
 
-                arrival = TrainDataSource._build_arrival(arr_str, date_str, trip)
-                if arrival is not None:
-                    arrivals.append(arrival)
 
-        return sorted(arrivals, key=lambda a: a.effective_time)
+def _read_routes(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Map route_id → route_short_name."""
+    route_map: dict[str, str] = {}
+    with zf.open("routes.txt") as f:
+        for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+            route_map[row["route_id"]] = row.get("route_short_name", "")
+    return route_map
 
-    @staticmethod
-    def _build_arrival(
-        time_str: str, date_str: str, trip: dict
-    ) -> Arrival | None:
-        parts = time_str.split(":")
-        if len(parts) < 2:
-            return None
-        try:
-            hour = int(parts[0])
-            minute = int(parts[1])
-        except ValueError:
-            return None
 
-        # GTFS allows hour >= 24 for post-midnight times on the same service day
-        day_offset = 0
-        if hour >= 24:
-            hour -= 24
-            day_offset = 1
+def _active_trips(
+    zf: zipfile.ZipFile,
+    services: set[str],
+    route_map: dict[str, str],
+) -> dict[str, dict]:
+    """Map trip_id → trip row for active services that are real train services."""
+    trips: dict[str, dict] = {}
+    with zf.open("trips.txt") as f:
+        for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+            if row.get("service_id") not in services:
+                continue
+            route_name = route_map.get(row.get("route_id", ""), "").strip().upper()
+            if route_name not in _TRAIN_TYPES:
+                continue
+            row["_route_name"] = route_name
+            trips[row["trip_id"]] = row
+    return trips
 
-        try:
-            base = datetime.strptime(date_str, "%Y%m%d")
-            dt = LUX_TZ.localize(base.replace(hour=hour, minute=minute, second=0))
-            if day_offset:
-                dt += timedelta(days=1)
-        except (ValueError, TypeError):
-            return None
 
-        route_name = trip.get("_route_name", "")
-        headsign = trip.get("trip_headsign", "")
-        origin = (
-            headsign.replace(", Gare", "").replace(" Gare", "").strip()
-            if headsign
-            else "Unknown"
+def _extract_arrivals(
+    zf: zipfile.ZipFile,
+    trips: dict[str, dict],
+    date_str: str,
+) -> list[Arrival]:
+    """Scan stop_times.txt for Gare Centrale rows and build Arrival objects.
+
+    Uses arrival_time (not departure_time) — the moment the train reaches
+    the station, not when it departs again.
+    """
+    arrivals: list[Arrival] = []
+    with zf.open("stop_times.txt") as f:
+        for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+            if row.get("stop_id") != _STOP_ID:
+                continue
+            trip = trips.get(row.get("trip_id", ""))
+            if trip is None:
+                continue
+            arr_str = row.get("arrival_time", "")
+            if not arr_str:
+                continue
+            arrival = _build_arrival(arr_str, date_str, trip)
+            if arrival is not None:
+                arrivals.append(arrival)
+
+    return sorted(arrivals, key=lambda a: a.effective_time)
+
+
+def _build_arrival(time_str: str, date_str: str, trip: dict) -> Arrival | None:
+    parts = time_str.split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour   = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+
+    # GTFS allows hour >= 24 for post-midnight continuations of the service day
+    day_offset = 0
+    if hour >= 24:
+        hour -= 24
+        day_offset = 1
+
+    try:
+        base = datetime.strptime(date_str, "%Y%m%d")
+        # is_dst=False: take post-transition (standard) time during DST fall-back
+        # to avoid pytz.AmbiguousTimeError on the ambiguous 02:00–03:00 hour.
+        dt = _LUX_TZ.localize(
+            base.replace(hour=hour, minute=minute, second=0),
+            is_dst=False,
         )
+        if day_offset:
+            dt += timedelta(days=1)
+    except (ValueError, TypeError):
+        return None
 
-        return Arrival(
-            transport_type=TransportType.TRAIN,
-            scheduled_time=dt,
-            identifier=route_name,
-            origin=origin,
-            status="scheduled",
-        )
+    route_name = trip.get("_route_name", "Train")
+    headsign   = (trip.get("trip_headsign") or "").strip()
 
-    @staticmethod
-    def _filter_future(arrivals: list[Arrival], *, after: datetime) -> list[Arrival]:
-        return [a for a in arrivals if a.effective_time >= after]
+    # The headsign for a train arriving at Gare Centrale is typically the
+    # full route name ending in "Luxembourg, Gare Centrale".
+    # Strip that suffix to expose the meaningful origin city.
+    if headsign:
+        for suffix in (
+            "Luxembourg, Gare Centrale",
+            ", Gare Centrale",
+            "Gare Centrale",
+        ):
+            headsign = headsign.replace(suffix, "")
+        origin = headsign.strip(" -,") or "—"
+    else:
+        origin = "—"
+
+    return Arrival(
+        transport_type=TransportType.TRAIN,
+        scheduled_time=dt,
+        identifier=route_name,
+        origin=origin,
+        status="scheduled",
+    )

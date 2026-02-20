@@ -1,4 +1,4 @@
-"""Application settings loaded from environment / .env file."""
+"""Application settings — loaded once from .env, cached for the process lifetime."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Required
     telegram_bot_token: str
     telegram_chat_id: str
 
-    report_interval_hours: int = 3
-    timezone: str = "Europe/Luxembourg"
+    # Optional with sensible defaults
+    report_interval_hours: int = 3   # 0 = disable auto-reports
     log_level: str = "INFO"
-    cache_ttl_seconds: int = 600
 
 
 @lru_cache(maxsize=1)

@@ -1,4 +1,4 @@
-"""Domain models for TaxiBOT."""
+"""Domain models — pure dataclasses, no framework dependencies."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ class SourceStatus(str, Enum):
 @dataclass
 class Arrival:
     transport_type: TransportType
-    scheduled_time: datetime
-    identifier: str
-    origin: str
+    scheduled_time: datetime       # always tz-aware, Europe/Luxembourg
+    identifier: str                # e.g. "LX123", "IC", "TGV"
+    origin: str                    # city / airport the service comes from
     status: str = "scheduled"
     delay_minutes: int = 0
 
@@ -33,9 +33,9 @@ class Arrival:
 
 @dataclass
 class DemandPeak:
-    time_slot: str
+    time_slot: str   # "14:30"
     count: int
-    location: str
+    location: str    # "Airport" | "Gare Centrale"
 
 
 @dataclass
@@ -62,6 +62,6 @@ class Report:
     recommendations: list[str] = field(default_factory=list)
     flights_status: SourceStatus = SourceStatus.UNAVAILABLE
     trains_status: SourceStatus = SourceStatus.UNAVAILABLE
-    time_blocks: list[TimeBlock] | None = None
+    time_blocks: list[TimeBlock] = field(default_factory=list)
     next_flight: Arrival | None = None
     next_train: Arrival | None = None

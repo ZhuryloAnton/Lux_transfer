@@ -1,13 +1,11 @@
-"""Telegram command and button handlers.
-
-Only two buttons: Schedule Now (Next 3 Hours) and Tomorrow Schedule.
-All event-related handlers have been removed.
-"""
+"""Telegram command and keyboard-button handlers."""
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
+import pytz
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -15,7 +13,9 @@ from utils.text import split_message
 
 logger = logging.getLogger(__name__)
 
-BTN_NOW = "📊 Next 3 Hours"
+# ── Keyboard ──────────────────────────────────────────────────────────────────
+
+BTN_NOW      = "📊 Next 3 Hours"
 BTN_TOMORROW = "📅 Tomorrow Schedule"
 
 KEYBOARD = ReplyKeyboardMarkup(
@@ -24,14 +24,18 @@ KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=False,
 )
 
+_LUX_TZ = pytz.timezone("Europe/Luxembourg")
+
+
+# ── Command handlers ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🚖 <b>TaxiBOT Luxembourg</b>\n\n"
-        "Real-time taxi demand forecasts:\n"
-        "  ✈️ Flights — Luxembourg Airport\n"
-        "  🚆 Trains — Gare Centrale Luxembourg\n\n"
-        "Tap a button below to get a forecast.",
+        "Taxi demand forecasts for Luxembourg City:\n"
+        "  ✈️ Flights  — Luxembourg Airport\n"
+        "  🚆 Trains   — Gare Centrale Luxembourg\n\n"
+        "Tap a button below to get started.",
         parse_mode="HTML",
         reply_markup=KEYBOARD,
     )
@@ -39,14 +43,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🚖 <b>TaxiBOT Commands</b>\n\n"
-        f"<b>{BTN_NOW}</b> — flights + trains arriving in the next 3 hours\n"
-        f"<b>{BTN_TOMORROW}</b> — tomorrow's full train schedule + morning flights\n\n"
-        "/start — show the keyboard\n"
-        "/report — same as Next 3 Hours\n"
-        "/tomorrow — same as Tomorrow Schedule\n"
-        "/status — bot health check\n"
-        "/help — this message",
+        "🚖 <b>TaxiBOT — Help</b>\n\n"
+        f"<b>{BTN_NOW}</b>\n"
+        "  Flights + trains arriving in the next 3 hours.\n\n"
+        f"<b>{BTN_TOMORROW}</b>\n"
+        "  Tomorrow's full train schedule + morning flights.\n\n"
+        "<b>Commands</b>\n"
+        "  /start    — show the keyboard\n"
+        "  /report   — same as Next 3 Hours\n"
+        "  /tomorrow — same as Tomorrow Schedule\n"
+        "  /status   — bot health check\n"
+        "  /help     — this message",
         parse_mode="HTML",
         reply_markup=KEYBOARD,
     )
@@ -61,14 +68,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    import pytz
-    from datetime import datetime
-    now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
+    now = datetime.now(tz=_LUX_TZ)
     await update.message.reply_text(
         f"✅ <b>TaxiBOT is running</b>\n"
-        f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
-        f"📡 Flights: lux-airport.lu API\n"
-        f"📡 Trains: Luxembourg GTFS (data.public.lu — Gare Centrale only)",
+        f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+        f"📡 Flights : lux-airport.lu API\n"
+        f"📡 Trains  : Luxembourg GTFS (data.public.lu)\n"
+        f"📍 Station : Gare Centrale Luxembourg",
         parse_mode="HTML",
         reply_markup=KEYBOARD,
     )
@@ -82,40 +88,43 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _handle_tomorrow(update, context)
 
 
-# ---------------------------------------------------------------------------
-# Internal handlers
-# ---------------------------------------------------------------------------
-
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 async def _handle_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet.")
+        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
         return
-    await update.message.reply_text("⏳ Fetching live data…")
+    msg = await update.message.reply_text("⏳ Fetching live data…")
     try:
         text = await pipeline.now_report()
+        await msg.delete()
         for chunk in split_message(text):
             await update.message.reply_text(chunk, parse_mode="HTML", reply_markup=KEYBOARD)
     except Exception:
         logger.exception("now_report failed")
+        await msg.delete()
         await update.message.reply_text(
-            "❌ Report generation failed. Please try again.", reply_markup=KEYBOARD
+            "❌ Could not generate report. Please try again in a moment.",
+            reply_markup=KEYBOARD,
         )
 
 
 async def _handle_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet.")
+        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
         return
-    await update.message.reply_text("⏳ Fetching tomorrow's schedule…")
+    msg = await update.message.reply_text("⏳ Fetching tomorrow's schedule…")
     try:
         text = await pipeline.tomorrow_report()
+        await msg.delete()
         for chunk in split_message(text):
             await update.message.reply_text(chunk, parse_mode="HTML", reply_markup=KEYBOARD)
     except Exception:
         logger.exception("tomorrow_report failed")
+        await msg.delete()
         await update.message.reply_text(
-            "❌ Report generation failed. Please try again.", reply_markup=KEYBOARD
+            "❌ Could not generate report. Please try again in a moment.",
+            reply_markup=KEYBOARD,
         )
