@@ -74,7 +74,7 @@ def _section_flights_now(
     peaks:        list[DemandPeak],
     next_arrival: Arrival | None,
 ) -> str:
-    header = "✈️ <b>Flights (Airport)</b>"
+    header = "✈️ <b>Flights (Luxembourg-Findel International Airport)</b>"
 
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
@@ -147,7 +147,7 @@ def _section_flights_tomorrow(
     status:   SourceStatus,
     peaks:    list[DemandPeak],
 ) -> str:
-    header = "✈️ <b>Morning Flights (before 12:00)</b>"
+    header = "✈️ <b>Morning Flights (Luxembourg-Findel, before 12:00)</b>"
 
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"

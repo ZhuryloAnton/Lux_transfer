@@ -33,7 +33,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🚖 <b>TaxiBOT Luxembourg</b>\n\n"
         "Taxi demand forecasts for Luxembourg City:\n"
-        "  ✈️ Flights  — Luxembourg Airport\n"
+        "  ✈️ Flights  — Luxembourg-Findel International Airport\n"
         "  🚆 Trains   — Gare Centrale Luxembourg\n\n"
         "Tap a button below to get started.",
         parse_mode="HTML",
