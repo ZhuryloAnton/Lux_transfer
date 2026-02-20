@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import logging
 
-from config.settings import get_settings
-from bot.application import create_application
+from settings import get_settings
+from application import create_application
 
 
 def main() -> None:

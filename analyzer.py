@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from bot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
+from models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 
 _LUX_TZ = pytz.timezone("Europe/Luxembourg")
 

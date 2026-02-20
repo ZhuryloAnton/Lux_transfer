@@ -10,7 +10,7 @@ import logging
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from bot.handlers import (
+from handlers import (
     BTN_NOW,
     BTN_TOMORROW,
     cmd_help,
@@ -20,10 +20,10 @@ from bot.handlers import (
     cmd_tomorrow,
     handle_button,
 )
-from config.settings import Settings
-from scheduler.jobs import scheduled_report
-from services.pipeline import ReportPipeline
-from utils.http import close_session
+from settings import Settings
+from jobs import scheduled_report
+from pipeline import ReportPipeline
+from http_client import close_session
 
 logger = logging.getLogger(__name__)
 

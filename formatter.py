@@ -6,8 +6,8 @@ No business logic — presentation only.
 
 from __future__ import annotations
 
-from bot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
-from utils.text import escape
+from models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
+from text import escape
 
 _NO_DATA = "⚠️ Data temporarily unavailable."
 

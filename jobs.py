@@ -6,7 +6,7 @@ import logging
 
 from telegram.ext import ContextTypes
 
-from utils.text import split_message
+from text import split_message
 
 logger = logging.getLogger(__name__)
 

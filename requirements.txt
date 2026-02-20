@@ -2,3 +2,4 @@ python-telegram-bot[job-queue]==21.6
 aiohttp==3.10.11
 pydantic-settings==2.7.0
 pytz==2024.2
+cachetools==5.5.0

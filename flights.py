@@ -23,8 +23,8 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from bot.models import Arrival, TransportType
-from utils.http import fetch_json
+from models import Arrival, TransportType
+from http_client import fetch_json
 
 logger = logging.getLogger(__name__)
 

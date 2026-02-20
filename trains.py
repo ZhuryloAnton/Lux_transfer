@@ -40,8 +40,8 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from bot.models import Arrival, TransportType
-from utils.http import fetch_bytes, fetch_json
+from models import Arrival, TransportType
+from http_client import fetch_bytes, fetch_json
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ _GTFS_DATASET_URL = (
 )
 
 # stop_id in GTFS stops.txt for "Luxembourg, Gare Centrale"
-_STOP_ID = "200405035"
+_STOP_ID = "000200405060"
 
 # route_short_name values that identify real train services
 # (excludes bus, tram, and other non-rail modes)
@@ -249,30 +249,72 @@ def _extract_arrivals(
     trips: dict[str, dict],
     date_str: str,
 ) -> list[Arrival]:
-    """Scan stop_times.txt for Gare Centrale rows and build Arrival objects.
+    """Scan stop_times.txt for trains whose FINAL stop is Gare Centrale.
 
-    Uses arrival_time (not departure_time) — the moment the train reaches
-    the station, not when it departs again.
+    Only trains that terminate at Gare Centrale are true arrivals (passengers
+    exiting and needing taxis).  Trains that originate or pass through are
+    excluded — they are departures, not arrivals.
+
+    Two-pass approach:
+      1. Find the maximum stop_sequence per trip and the Gare Centrale row.
+      2. Keep only trips where Gare Centrale has the highest stop_sequence.
     """
-    arrivals: list[Arrival] = []
+    gc_rows: dict[str, dict] = {}          # trip_id → stop_times row at Gare Centrale
+    trip_max_seq: dict[str, int] = {}      # trip_id → highest stop_sequence seen
+    trip_first: dict[str, tuple[int, str]] = {}  # trip_id → (min_seq, stop_id)
+
     with zf.open("stop_times.txt") as f:
         for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
-            if row.get("stop_id") != _STOP_ID:
+            tid = row.get("trip_id", "")
+            if tid not in trips:
                 continue
-            trip = trips.get(row.get("trip_id", ""))
-            if trip is None:
-                continue
-            arr_str = row.get("arrival_time", "")
-            if not arr_str:
-                continue
-            arrival = _build_arrival(arr_str, date_str, trip)
-            if arrival is not None:
-                arrivals.append(arrival)
+            seq = int(row.get("stop_sequence", 0))
+            if tid not in trip_max_seq or seq > trip_max_seq[tid]:
+                trip_max_seq[tid] = seq
+            if tid not in trip_first or seq < trip_first[tid][0]:
+                trip_first[tid] = (seq, row.get("stop_id", ""))
+            if row.get("stop_id") == _STOP_ID:
+                gc_rows[tid] = row
+
+    stop_names = _read_stop_names(zf)
+
+    arrivals: list[Arrival] = []
+    for tid, row in gc_rows.items():
+        gc_seq = int(row.get("stop_sequence", 0))
+        if gc_seq != trip_max_seq.get(tid, -1):
+            continue                       # not the final stop → skip
+        arr_str = row.get("arrival_time", "")
+        if not arr_str:
+            continue
+        origin_sid = trip_first.get(tid, (0, ""))[1]
+        origin_name = stop_names.get(origin_sid, "")
+        arrival = _build_arrival(arr_str, date_str, trips[tid], origin_name)
+        if arrival is not None:
+            arrivals.append(arrival)
 
     return sorted(arrivals, key=lambda a: a.effective_time)
 
 
-def _build_arrival(time_str: str, date_str: str, trip: dict) -> Arrival | None:
+def _read_stop_names(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Map stop_id → stop_name from stops.txt."""
+    names: dict[str, str] = {}
+    with zf.open("stops.txt") as f:
+        for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+            names[row.get("stop_id", "")] = row.get("stop_name", "")
+    return names
+
+
+def _clean_stop_name(name: str) -> str:
+    """Strip common GTFS suffixes like ', Gare' to keep origin labels short."""
+    for suffix in (", Gare Centrale", ", Gare", ", Hauptbahnhof", ", Hbf"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _build_arrival(
+    time_str: str, date_str: str, trip: dict, origin_stop_name: str
+) -> Arrival | None:
     parts = time_str.split(":")
     if len(parts) < 2:
         return None
@@ -282,7 +324,6 @@ def _build_arrival(time_str: str, date_str: str, trip: dict) -> Arrival | None:
     except ValueError:
         return None
 
-    # GTFS allows hour >= 24 for post-midnight continuations of the service day
     day_offset = 0
     if hour >= 24:
         hour -= 24
@@ -290,8 +331,6 @@ def _build_arrival(time_str: str, date_str: str, trip: dict) -> Arrival | None:
 
     try:
         base = datetime.strptime(date_str, "%Y%m%d")
-        # is_dst=False: take post-transition (standard) time during DST fall-back
-        # to avoid pytz.AmbiguousTimeError on the ambiguous 02:00–03:00 hour.
         dt = _LUX_TZ.localize(
             base.replace(hour=hour, minute=minute, second=0),
             is_dst=False,
@@ -302,26 +341,12 @@ def _build_arrival(time_str: str, date_str: str, trip: dict) -> Arrival | None:
         return None
 
     route_name = trip.get("_route_name", "Train")
-    headsign   = (trip.get("trip_headsign") or "").strip()
-
-    # The headsign for a train arriving at Gare Centrale is typically the
-    # full route name ending in "Luxembourg, Gare Centrale".
-    # Strip that suffix to expose the meaningful origin city.
-    if headsign:
-        for suffix in (
-            "Luxembourg, Gare Centrale",
-            ", Gare Centrale",
-            "Gare Centrale",
-        ):
-            headsign = headsign.replace(suffix, "")
-        origin = headsign.strip(" -,") or "—"
-    else:
-        origin = "—"
+    origin = _clean_stop_name(origin_stop_name) if origin_stop_name else "—"
 
     return Arrival(
         transport_type=TransportType.TRAIN,
         scheduled_time=dt,
         identifier=route_name,
-        origin=origin,
+        origin=origin or "—",
         status="scheduled",
     )

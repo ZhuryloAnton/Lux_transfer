@@ -13,11 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from bot.models import Arrival
-from services.analyzer import build_now_report, build_tomorrow_report
-from services.flights import FlightDataSource
-from services.formatter import format_next_tgv, format_now_report, format_tomorrow_report
-from services.trains import TrainDataSource
+from models import Arrival
+from analyzer import build_now_report, build_tomorrow_report
+from flights import FlightDataSource
+from formatter import format_next_tgv, format_now_report, format_tomorrow_report
+from trains import TrainDataSource
 
 logger = logging.getLogger(__name__)
 
