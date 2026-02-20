@@ -11,12 +11,16 @@ import logging
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from handlers import (
+    BTN_FLIGHTS,
     BTN_NOW,
+    BTN_TODAY,
     BTN_TOMORROW,
+    cmd_flights,
     cmd_help,
     cmd_report,
     cmd_start,
     cmd_status,
+    cmd_today,
     cmd_tomorrow,
     handle_button,
 )
@@ -50,13 +54,16 @@ def create_application(settings: Settings) -> Application:  # type: ignore[type-
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("help",     cmd_help))
     app.add_handler(CommandHandler("report",   cmd_report))
+    app.add_handler(CommandHandler("today",    cmd_today))
     app.add_handler(CommandHandler("tomorrow", cmd_tomorrow))
+    app.add_handler(CommandHandler("flights",  cmd_flights))
     app.add_handler(CommandHandler("status",   cmd_status))
 
     # ── Keyboard buttons ──────────────────────────────────────────────
+    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TOMORROW}|{BTN_FLIGHTS})$"
     app.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex(f"^({BTN_NOW}|{BTN_TOMORROW})$"),
+            filters.TEXT & filters.Regex(btn_pattern),
             handle_button,
         )
     )

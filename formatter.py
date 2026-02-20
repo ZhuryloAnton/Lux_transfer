@@ -32,27 +32,63 @@ def format_now_report(r: Report) -> str:
     return "\n".join(parts)
 
 
-def format_tomorrow_report(r: Report) -> str:
+def format_fullday_report(r: Report, title: str) -> str:
     day = r.window_start.strftime("%A %d %b %Y")
     ts  = r.generated_at.strftime("%H:%M")
 
     if _both_down(r):
-        return f"📅 <b>Tomorrow — {day}</b>\n🕐 Generated {ts}\n\n{_NO_DATA}"
+        return f"{title} <b>{day}</b>\n🕐 Generated {ts}\n\n{_NO_DATA}"
 
     parts: list[str] = [
-        f"📅 <b>Tomorrow — {day}</b>",
+        f"{title} <b>{day}</b>",
         f"🕐 Generated {ts}",
         "",
+        _section_flights_summary(r.flights, r.flights_status, r.flight_peaks),
+        _section_trains_summary(r.trains, r.trains_status, r.train_peaks),
     ]
-
-    parts.append(_section_flights_tomorrow(r.flights, r.flights_status, r.flight_peaks))
-    parts.append(_section_trains_tomorrow(r.trains, r.trains_status, r.train_peaks))
 
     if r.time_blocks:
         parts.append(_section_time_blocks(r.time_blocks))
 
     parts.append(_section_recs(r.recommendations))
     return "\n".join(parts)
+
+
+def format_today_report(r: Report) -> str:
+    return format_fullday_report(r, "📋 Today —")
+
+
+def format_tomorrow_report(r: Report) -> str:
+    return format_fullday_report(r, "📅 Tomorrow —")
+
+
+def format_flights_report(flights: list[Arrival], ok: bool) -> str:
+    """Flights-only detailed report."""
+    from datetime import datetime
+    import pytz
+    now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
+    ts = now.strftime("%A %d %b %Y, %H:%M")
+
+    header = "✈️ <b>Flights — Luxembourg-Findel International Airport</b>"
+
+    if not ok:
+        return f"{header}\n🕐 {ts}\n\n  ⚠️ Data unavailable"
+
+    if not flights:
+        return f"{header}\n🕐 {ts}\n\n  No upcoming flights today"
+
+    lines = [
+        header,
+        f"🕐 {ts}   ({len(flights)} arrival{'s' if len(flights)!=1 else ''})",
+        "",
+    ]
+    for a in flights:
+        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
+        lines.append(
+            f"  {a.effective_time.strftime('%H:%M')} "
+            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
+        )
+    return "\n".join(lines)
 
 
 def format_next_tgv(tgv: Arrival | None) -> str:
@@ -142,39 +178,33 @@ def _section_trains_now(
     return "\n".join(lines)
 
 
-def _section_flights_tomorrow(
+def _section_flights_summary(
     arrivals: list[Arrival],
     status:   SourceStatus,
     peaks:    list[DemandPeak],
 ) -> str:
-    header = "✈️ <b>Morning Flights (Luxembourg-Findel, before 12:00)</b>"
+    header = "✈️ <b>Flights (Luxembourg-Findel)</b>"
 
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
     if not arrivals:
         return f"{header}\n  None scheduled\n"
 
-    lines = [f"{header} — {len(arrivals)} arrival{'s' if len(arrivals)!=1 else ''}"]
-    for a in arrivals[:10]:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        lines.append(
-            f"  {a.effective_time.strftime('%H:%M')} "
-            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
-        )
-    if len(arrivals) > 10:
-        lines.append(f"  <i>+{len(arrivals) - 10} more…</i>")
-    if peaks:
-        lines.append(f"  📈 Peak: {peaks[0].time_slot} ({peaks[0].count} flights)")
-    lines.append("")
-    return "\n".join(lines)
+    first = arrivals[0].effective_time.strftime("%H:%M")
+    last  = arrivals[-1].effective_time.strftime("%H:%M")
+    peak  = f" | Peak: {peaks[0].time_slot}" if peaks else ""
+    return (
+        f"{header}\n"
+        f"  {len(arrivals)} arrivals  {first} – {last}{peak}\n"
+    )
 
 
-def _section_trains_tomorrow(
+def _section_trains_summary(
     arrivals: list[Arrival],
     status:   SourceStatus,
     peaks:    list[DemandPeak],
 ) -> str:
-    header = "🚆 <b>Trains (Gare Centrale, full day)</b>"
+    header = "🚆 <b>Trains (Gare Centrale)</b>"
 
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"

@@ -59,16 +59,18 @@ def build_now_report(
     )
 
 
-def build_tomorrow_report(
+def build_fullday_report(
     flights: list[Arrival],
     trains:  list[Arrival],
     *,
     flights_ok: bool,
     trains_ok:  bool,
+    day: datetime,
 ) -> Report:
+    """Full-day report — used for both Today and Tomorrow."""
     now   = datetime.now(tz=_LUX_TZ)
-    start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    end   = start.replace(hour=23, minute=59, second=59)
+    start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    end   = day.replace(hour=23, minute=59, second=59)
 
     combined = sorted(flights + trains, key=lambda a: a.effective_time)
     blocks   = _time_blocks(combined, start)
@@ -81,10 +83,26 @@ def build_tomorrow_report(
         trains=sorted(trains,  key=lambda a: a.effective_time),
         flight_peaks=_peaks(flights, "Airport"),
         train_peaks=_peaks(trains,  "Gare Centrale"),
-        recommendations=_recs_tomorrow(flights, trains, blocks),
+        recommendations=_recs_fullday(flights, trains, blocks),
         flights_status=SourceStatus.OK if flights_ok else SourceStatus.UNAVAILABLE,
         trains_status=SourceStatus.OK if trains_ok  else SourceStatus.UNAVAILABLE,
         time_blocks=blocks,
+    )
+
+
+def build_tomorrow_report(
+    flights: list[Arrival],
+    trains:  list[Arrival],
+    *,
+    flights_ok: bool,
+    trains_ok:  bool,
+) -> Report:
+    now = datetime.now(tz=_LUX_TZ)
+    tomorrow = (now + timedelta(days=1))
+    return build_fullday_report(
+        flights, trains,
+        flights_ok=flights_ok, trains_ok=trains_ok,
+        day=tomorrow,
     )
 
 
@@ -158,7 +176,7 @@ def _recs_now(
     return recs
 
 
-def _recs_tomorrow(
+def _recs_fullday(
     flights: list[Arrival],
     trains:  list[Arrival],
     blocks:  list[TimeBlock],
@@ -171,9 +189,9 @@ def _recs_tomorrow(
             recs.append(f"Busiest block: {busiest.label} ({busiest.count} arrivals)")
 
     if flights:
-        recs.append(f"Morning airport run: {len(flights)} flight{'s' if len(flights)!=1 else ''} before noon")
+        recs.append(f"Airport: {len(flights)} flight{'s' if len(flights)!=1 else ''}")
     if trains:
-        recs.append(f"Trains all day: {len(trains)} arrivals at Gare Centrale")
+        recs.append(f"Gare Centrale: {len(trains)} train{'s' if len(trains)!=1 else ''}")
 
     morning = next((b for b in blocks if b.start_hour == 8),  None)
     evening = next((b for b in blocks if b.start_hour == 17), None)

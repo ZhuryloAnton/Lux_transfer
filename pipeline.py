@@ -14,9 +14,15 @@ import asyncio
 import logging
 
 from models import Arrival
-from analyzer import build_now_report, build_tomorrow_report
+from analyzer import build_fullday_report, build_now_report, build_tomorrow_report
 from flights import FlightDataSource
-from formatter import format_next_tgv, format_now_report, format_tomorrow_report
+from formatter import (
+    format_flights_report,
+    format_next_tgv,
+    format_now_report,
+    format_today_report,
+    format_tomorrow_report,
+)
 from trains import TrainDataSource
 
 logger = logging.getLogger(__name__)
@@ -43,9 +49,34 @@ class ReportPipeline:
         report = build_now_report(flights, trains, flights_ok=flights_ok, trains_ok=trains_ok)
         return format_now_report(report) + format_next_tgv(tgv)
 
-    async def tomorrow_report(self) -> str:
+    async def today_report(self) -> str:
+        """Full-day today schedule: all flights + trains."""
+        from datetime import datetime
+        import pytz
+        now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
+
         flights_res, trains_res, tgv_res = await asyncio.gather(
-            self._flights.fetch_tomorrow_morning(),
+            self._flights.fetch_today(),
+            self._trains.fetch_today(),
+            self._trains.get_next_tgv(),
+            return_exceptions=True,
+        )
+
+        flights, flights_ok = _unpack(flights_res, "flights/today")
+        trains,  trains_ok  = _unpack(trains_res,  "trains/today")
+        tgv = tgv_res if isinstance(tgv_res, Arrival) else None
+
+        report = build_fullday_report(
+            flights, trains,
+            flights_ok=flights_ok, trains_ok=trains_ok,
+            day=now,
+        )
+        return format_today_report(report) + format_next_tgv(tgv)
+
+    async def tomorrow_report(self) -> str:
+        """Full-day tomorrow schedule: all flights + trains."""
+        flights_res, trains_res, tgv_res = await asyncio.gather(
+            self._flights.fetch_tomorrow(),
             self._trains.fetch_tomorrow(),
             self._trains.get_next_tgv(),
             return_exceptions=True,
@@ -57,6 +88,15 @@ class ReportPipeline:
 
         report = build_tomorrow_report(flights, trains, flights_ok=flights_ok, trains_ok=trains_ok)
         return format_tomorrow_report(report) + format_next_tgv(tgv)
+
+    async def flights_report(self) -> str:
+        """Flights-only detailed report for today."""
+        flights_res = await asyncio.gather(
+            self._flights.fetch_today(),
+            return_exceptions=True,
+        )
+        flights, flights_ok = _unpack(flights_res[0], "flights/today")
+        return format_flights_report(flights, flights_ok)
 
 
 def _unpack(result: object, label: str) -> tuple[list[Arrival], bool]:
