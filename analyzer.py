@@ -17,6 +17,7 @@ from models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 _LUX_TZ = pytz.timezone("Europe/Luxembourg")
 
 _TIME_BLOCKS = [
+    ("Late Night   (00–05)", 0,  5),
     ("Early Morning (05–08)", 5,  8),
     ("Morning      (08–12)", 8,  12),
     ("Afternoon    (12–17)", 12, 17),

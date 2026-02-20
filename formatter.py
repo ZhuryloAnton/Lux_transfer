@@ -59,7 +59,35 @@ def format_today_report(r: Report) -> str:
 
 
 def format_tomorrow_report(r: Report) -> str:
-    return format_fullday_report(r, "📅 Tomorrow —")
+    day = r.window_start.strftime("%A %d %b %Y")
+    ts  = r.generated_at.strftime("%H:%M")
+
+    if _both_down(r):
+        return f"📅 Tomorrow — <b>{day}</b>\n🕐 Generated {ts}\n\n{_NO_DATA}"
+
+    parts: list[str] = [
+        f"📅 Tomorrow — <b>{day}</b>",
+        f"🕐 Generated {ts}",
+        "",
+    ]
+
+    # Flights — detailed list
+    parts.append(_section_detailed_list(
+        r.flights, r.flights_status,
+        "✈️ <b>Flights (Luxembourg-Findel)</b>",
+    ))
+
+    # Trains — grouped by time block
+    if r.time_blocks:
+        parts.append(_section_trains_by_block(r.trains, r.trains_status, r.time_blocks))
+    else:
+        parts.append(_section_detailed_list(
+            r.trains, r.trains_status,
+            "🚆 <b>Trains (Gare Centrale)</b>",
+        ))
+
+    parts.append(_section_recs(r.recommendations))
+    return "\n".join(parts)
 
 
 def format_flights_report(flights: list[Arrival], ok: bool) -> str:
@@ -218,6 +246,63 @@ def _section_trains_summary(
         f"{header}\n"
         f"  {len(arrivals)} arrivals  {first} – {last}{peak}\n"
     )
+
+
+def _section_detailed_list(
+    arrivals: list[Arrival],
+    status:   SourceStatus,
+    header:   str,
+) -> str:
+    """Full listing of arrivals — used for tomorrow's detailed view."""
+    if status == SourceStatus.UNAVAILABLE:
+        return f"{header}\n  ⚠️ Data unavailable\n"
+    if not arrivals:
+        return f"{header}\n  None scheduled\n"
+
+    lines = [f"{header} — {len(arrivals)} arrival{'s' if len(arrivals)!=1 else ''}"]
+    for a in arrivals:
+        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
+        lines.append(
+            f"  {a.effective_time.strftime('%H:%M')} "
+            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _section_trains_by_block(
+    trains: list[Arrival],
+    status: SourceStatus,
+    blocks: list[TimeBlock],
+) -> str:
+    """Trains grouped by time period — detailed view for tomorrow."""
+    header = "🚆 <b>Trains (Gare Centrale)</b>"
+
+    if status == SourceStatus.UNAVAILABLE:
+        return f"{header}\n  ⚠️ Data unavailable\n"
+
+    total = len(trains)
+    if total == 0:
+        return f"{header}\n  None scheduled\n"
+
+    lines = [f"{header} — {total} arrival{'s' if total!=1 else ''}"]
+    for b in blocks:
+        block_trains = [
+            a for a in trains
+            if a.effective_time.hour >= b.start_hour
+            and a.effective_time.hour < (b.end_hour if b.end_hour < 24 else 24)
+        ]
+        if not block_trains:
+            continue
+        block_trains.sort(key=lambda a: a.effective_time)
+        lines.append(f"\n  <b>{b.label}</b> ({len(block_trains)})")
+        for a in block_trains:
+            lines.append(
+                f"    {a.effective_time.strftime('%H:%M')} "
+                f"{escape(a.identifier)} ← {escape(a.origin)}"
+            )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _section_time_blocks(blocks: list[TimeBlock]) -> str:

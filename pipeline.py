@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 class ReportPipeline:
 
-    def __init__(self) -> None:
+    def __init__(self, mobiliteit_api_key: str = "") -> None:
         self._flights = FlightDataSource()
-        self._trains  = TrainDataSource()
+        self._trains  = TrainDataSource(api_key=mobiliteit_api_key)
 
     async def now_report(self) -> str:
         flights_res, trains_res, tgv_res = await asyncio.gather(

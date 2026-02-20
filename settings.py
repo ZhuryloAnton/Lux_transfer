@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Required
     telegram_bot_token: str
     telegram_chat_id: str
+    mobiliteit_api_key: str
 
     # Optional with sensible defaults
     report_interval_hours: int = 3   # 0 = disable auto-reports

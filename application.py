@@ -47,7 +47,9 @@ def create_application(settings: Settings) -> Application:  # type: ignore[type-
     )
 
     # Shared state stored in bot_data so handlers and jobs can access it
-    app.bot_data["pipeline"] = ReportPipeline()
+    app.bot_data["pipeline"] = ReportPipeline(
+        mobiliteit_api_key=settings.mobiliteit_api_key,
+    )
     app.bot_data["chat_id"] = settings.telegram_chat_id
 
     # ── Commands ──────────────────────────────────────────────────────

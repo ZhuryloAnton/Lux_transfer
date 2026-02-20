@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 BTN_NOW      = "📊 Next 3 Hours"
 BTN_TODAY    = "📋 Today Schedule"
 BTN_TOMORROW = "📅 Tomorrow Schedule"
-BTN_FLIGHTS  = "✈️ Flights Only"
+BTN_FLIGHTS  = "✈️ Today Flights"
 
 KEYBOARD = ReplyKeyboardMarkup(
     [
