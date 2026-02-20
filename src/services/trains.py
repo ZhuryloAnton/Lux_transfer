@@ -146,6 +146,35 @@ class TrainDataSource(BaseDataSource):
         now = datetime.now(tz=LUX_TZ)
         return [a for a in items if a.effective_time >= now]
 
+    async def get_next_tgv(self) -> Arrival | None:
+        """Find the next TGV arrival at Gare Centrale."""
+        now = datetime.now(tz=LUX_TZ)
+        try:
+            raw = await self.fetch_raw()
+        except Exception:
+            return None
+        if not isinstance(raw, list):
+            return None
+        tgvs: list[Arrival] = []
+        for entry in raw:
+            if entry.get("route_name") != "TGV":
+                continue
+            a = self._parse_gtfs_entry(entry)
+            if a is not None and a.effective_time > now:
+                tgvs.append(a)
+        if not tgvs:
+            try:
+                tomorrow_raw = await self._fetch_for_date(now + timedelta(days=1))
+            except DataSourceError:
+                return None
+            for entry in tomorrow_raw:
+                if entry.get("route_name") != "TGV":
+                    continue
+                a = self._parse_gtfs_entry(entry)
+                if a is not None and a.effective_time > now:
+                    tgvs.append(a)
+        return min(tgvs, key=lambda a: a.effective_time) if tgvs else None
+
     @staticmethod
     def _parse_gtfs_entry(entry: dict) -> Arrival | None:
         time_str = entry.get("arrival_time", "")

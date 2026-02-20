@@ -227,5 +227,13 @@ def _fmt_event(e: Event) -> str:
     return "\n".join(parts)
 
 
+def format_next_tgv(tgv: Arrival | None) -> str:
+    if tgv is None:
+        return "\n\n🚄 <b>Next TGV:</b> no data available"
+    t = tgv.effective_time.strftime("%H:%M")
+    d = tgv.effective_time.strftime("%a %d %b")
+    return f"\n\n🚄 <b>Next TGV:</b> {t} ({d}) from {tgv.origin}"
+
+
 def _all_down(r: Report) -> bool:
     return r.flights_status == SourceStatus.UNAVAILABLE and r.trains_status == SourceStatus.UNAVAILABLE
