@@ -64,14 +64,47 @@ class TrainDataSource:
         return arrivals
 
     async def get_next_tgv(self) -> Arrival | None:
-        """Return the next TGV arriving at Gare Centrale."""
+        """Return the next TGV arriving at Gare Centrale with Paris departure time."""
         now = datetime.now(tz=_LUX_TZ)
         arrivals = await self._fetch_arrivals(now, duration=1439)
         tgvs = [
             a for a in arrivals
             if a.identifier == "TGV" and a.effective_time > now
         ]
-        return min(tgvs, key=lambda a: a.effective_time) if tgvs else None
+        if not tgvs:
+            return None
+
+        tgv = min(tgvs, key=lambda a: a.effective_time)
+
+        if tgv.journey_ref:
+            tgv.paris_departure = await self._fetch_paris_departure(tgv.journey_ref)
+
+        return tgv
+
+    # ── Journey detail (Paris stop lookup) ─────────────────────────────────────
+
+    async def _fetch_paris_departure(self, ref: str) -> datetime | None:
+        """Fetch journey stops and return the departure time from Paris."""
+        if not self._api_key or not ref:
+            return None
+        params = {
+            "accessId": self._api_key,
+            "ref": ref,
+            "format": "json",
+            "lang": "en",
+        }
+        url = f"{_API_BASE}/journeyDetail"
+        try:
+            data = await fetch_json(url, params=params, ssl=False)
+        except Exception as exc:
+            logger.warning("HAFAS journeyDetail failed: %s", exc)
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        stops = _extract_journey_stops(data)
+        return _find_paris_departure(stops)
 
     # ── API call ──────────────────────────────────────────────────────────────
 
@@ -200,6 +233,9 @@ def _parse_one(entry: dict, *, is_arrival: bool) -> Arrival | None:
     origin_field = "origin" if is_arrival else "direction"
     origin = _clean_name(entry.get(origin_field, ""))
 
+    ref_data = entry.get("JourneyDetailRef") or {}
+    journey_ref = ref_data.get("ref", "") if isinstance(ref_data, dict) else ""
+
     return Arrival(
         transport_type=TransportType.TRAIN,
         scheduled_time=sched_dt,
@@ -207,6 +243,7 @@ def _parse_one(entry: dict, *, is_arrival: bool) -> Arrival | None:
         origin=origin or "—",
         status="scheduled",
         delay_minutes=delay,
+        journey_ref=journey_ref,
     )
 
 
@@ -231,6 +268,37 @@ def _parse_hafas_dt(date_str: str, time_str: str) -> datetime | None:
         return dt
     except (ValueError, TypeError, IndexError):
         return None
+
+
+def _extract_journey_stops(data: dict) -> list[dict]:
+    """Extract stop list from a HAFAS journeyDetail response."""
+    stops_wrapper = data.get("Stops") or data.get("stops") or {}
+    if isinstance(stops_wrapper, dict):
+        stops = stops_wrapper.get("Stop") or stops_wrapper.get("stop") or []
+    elif isinstance(stops_wrapper, list):
+        stops = stops_wrapper
+    else:
+        stops = []
+    if isinstance(stops, dict):
+        stops = [stops]
+    return stops if isinstance(stops, list) else []
+
+
+def _find_paris_departure(stops: list[dict]) -> datetime | None:
+    """Find the departure time from a Paris station in the journey stops."""
+    for stop in stops:
+        name = (stop.get("name") or stop.get("Name") or "").lower()
+        if "paris" not in name:
+            continue
+        dep_date = stop.get("depDate", "") or stop.get("depDate", "")
+        dep_time = stop.get("depTime", "") or stop.get("depTime", "")
+        if dep_date and dep_time:
+            return _parse_hafas_dt(dep_date, dep_time)
+        arr_date = stop.get("arrDate", "")
+        arr_time = stop.get("arrTime", "")
+        if arr_date and arr_time:
+            return _parse_hafas_dt(arr_date, arr_time)
+    return None
 
 
 def _clean_name(name: str) -> str:

@@ -121,12 +121,19 @@ def format_flights_report(flights: list[Arrival], ok: bool) -> str:
 
 def format_next_tgv(tgv: Arrival | None) -> str:
     if tgv is None:
-        return "\n\n🚄 <b>Next TGV:</b> none found in schedule"
-    t = tgv.effective_time.strftime("%H:%M")
-    d = tgv.effective_time.strftime("%a %d %b")
+        return "\n\n🚄 <b>Next TGV Paris → Luxembourg:</b> none found in schedule"
+
+    lux_time = tgv.effective_time.strftime("%H:%M")
+    day = tgv.effective_time.strftime("%a %d %b")
+
+    if tgv.paris_departure:
+        paris_time = tgv.paris_departure.strftime("%H:%M")
+        return (
+            f"\n\n🚄 <b>Next TGV:</b> Paris ({paris_time}) → Luxembourg ({lux_time}) — {day}"
+        )
+
     return (
-        f"\n\n🚄 <b>Next TGV → Gare Centrale:</b> "
-        f"{t} ({d}) from {escape(tgv.origin)}"
+        f"\n\n🚄 <b>Next TGV:</b> → Luxembourg ({lux_time}) — {day}"
     )
 
 

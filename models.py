@@ -25,6 +25,8 @@ class Arrival:
     origin: str                    # city / airport the service comes from
     status: str = "scheduled"
     delay_minutes: int = 0
+    journey_ref: str = ""                       # HAFAS JourneyDetailRef (for stop lookup)
+    paris_departure: datetime | None = None     # TGV: departure time from Paris
 
     @property
     def effective_time(self) -> datetime:
