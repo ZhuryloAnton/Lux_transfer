@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taxibot"
+version = "1.0.0"
+description = "Telegram bot for taxi demand forecasts in Luxembourg City"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-telegram-bot[job-queue]==21.6",
+    "aiohttp==3.10.11",
+    "pydantic-settings==2.7.0",
+    "pytz==2024.2",
+    "cachetools==5.5.0",
+    "gtfs-realtime-bindings>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+taxibot = "taxibot:run"
