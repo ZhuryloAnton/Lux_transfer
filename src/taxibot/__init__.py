@@ -24,7 +24,8 @@ def run() -> None:
 def _setup_logging(level: str) -> None:
     import logging
 
-    numeric = getattr(logging, level.upper(), logging.INFO)
+    level = (level or "INFO").strip().upper()
+    numeric = getattr(logging, level, logging.INFO)
     logging.basicConfig(
         level=numeric,
         format="%(asctime)s | %(levelname)-8s | %(name)-25s | %(message)s",

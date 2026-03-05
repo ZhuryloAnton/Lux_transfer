@@ -17,7 +17,6 @@ BTN_NOW = "📊 Next 3 Hours"
 BTN_TODAY = "📋 Today Schedule"
 BTN_TOMORROW = "📅 Tomorrow Schedule"
 BTN_FLIGHTS = "✈️ Today Flights"
-BTN_NEXT_TRAIN = "🚆 Next train"
 BTN_NEXT_TGV = "🚄 Next TGV"
 BTN_TGV_TODAY = "🚄 TGV today"
 
@@ -25,8 +24,7 @@ KEYBOARD = ReplyKeyboardMarkup(
     [
         [BTN_NOW, BTN_TODAY],
         [BTN_TOMORROW, BTN_FLIGHTS],
-        [BTN_NEXT_TRAIN, BTN_NEXT_TGV],
-        [BTN_TGV_TODAY],
+        [BTN_NEXT_TGV, BTN_TGV_TODAY],
     ],
     resize_keyboard=True,
     one_time_keyboard=False,
@@ -54,7 +52,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>{BTN_TODAY}</b>\n  Full-day overview: flights + trains.\n\n"
         f"<b>{BTN_TOMORROW}</b>\n  Tomorrow's full-day schedule.\n\n"
         f"<b>{BTN_FLIGHTS}</b>\n  All today's flights in detail.\n\n"
-        f"<b>{BTN_NEXT_TRAIN}</b>\n  Next train (any type) — today, tomorrow or later.\n\n"
         f"<b>{BTN_NEXT_TGV}</b>\n  Next TGV Paris → Luxembourg only.\n\n"
         f"<b>{BTN_TGV_TODAY}</b>\n  Full TGV timetable for today.\n\n"
         "<b>Commands</b>\n"
@@ -63,9 +60,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /today    — same as Today Schedule\n"
         "  /tomorrow — same as Tomorrow Schedule\n"
         "  /flights  — same as Flights Only\n"
-        "  /next_train — next train (whenever it is)\n"
         "  /next_tgv   — next TGV only\n"
         "  /tgv        — TGV timetable today\n"
+        "  /trains     — trains in the next 3 hours\n"
         "  /status   — bot health check\n"
         "  /help     — this message",
         parse_mode="HTML",
@@ -89,12 +86,25 @@ async def cmd_flights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _handle_flights(update, context)
 
 
-async def cmd_next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _handle_next_train(update, context)
-
-
 async def cmd_next_tgv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _handle_next_tgv(update, context)
+
+
+async def cmd_trains(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show trains for the next 3 hours (no button)."""
+    pipeline = context.bot_data.get("pipeline")
+    if pipeline is None:
+        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
+        return
+    try:
+        text = await pipeline.trains_now_report()
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=KEYBOARD)
+    except Exception:
+        logger.exception("trains_now_report failed")
+        await update.message.reply_text(
+            "❌ Could not load trains. Please try again in a moment.",
+            reply_markup=KEYBOARD,
+        )
 
 
 async def cmd_tgv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,7 +125,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (update.message.text or "").strip()
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
     if text == BTN_NOW:
         await _handle_now(update, context)
     elif text == BTN_TODAY:
@@ -124,8 +136,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _handle_tomorrow(update, context)
     elif text == BTN_FLIGHTS:
         await _handle_flights(update, context)
-    elif text == BTN_NEXT_TRAIN:
-        await _handle_next_train(update, context)
     elif text == BTN_NEXT_TGV:
         await _handle_next_tgv(update, context)
     elif text == BTN_TGV_TODAY:
@@ -208,22 +218,6 @@ async def _handle_flights(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.delete()
         await update.message.reply_text(
             "❌ Could not generate report. Please try again in a moment.",
-            reply_markup=KEYBOARD,
-        )
-
-
-async def _handle_next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    pipeline = context.bot_data.get("pipeline")
-    if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
-        return
-    try:
-        text = await pipeline.next_train_report()
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=KEYBOARD)
-    except Exception:
-        logger.exception("next_train_report failed")
-        await update.message.reply_text(
-            "❌ Could not load next train. Please try again in a moment.",
             reply_markup=KEYBOARD,
         )
 

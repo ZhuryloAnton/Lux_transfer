@@ -23,9 +23,23 @@ def format_now_report(r: Report) -> str:
         "",
         _section_flights_now(r.flights, r.flights_status, r.flight_peaks, r.next_flight),
         _section_trains_now(r.trains, r.trains_status, r.train_peaks, r.next_train),
-        _line_next_train(r.next_train),
         _line_next_tgv(r.next_tgv),
         _section_recs(r.recommendations),
+    ]
+    return "\n".join(parts)
+
+
+def format_trains_next_3h(r: Report) -> str:
+    """Trains only for the next 3 hours (same format as in Next 3 Hours, no button)."""
+    ts = r.generated_at.strftime("%A %d %b %Y, %H:%M")
+    win = f"{r.window_start.strftime('%H:%M')} – {r.window_end.strftime('%H:%M')}"
+    if r.trains_status == SourceStatus.UNAVAILABLE:
+        return f"🚆 <b>Trains — Next 3 Hours</b>\n🕐 {ts}   📅 {win}\n\n  ⚠️ Data unavailable"
+    parts = [
+        "🚆 <b>Trains — Next 3 Hours</b>",
+        f"🕐 {ts}   📅 {win}",
+        "",
+        _section_trains_now(r.trains, r.trains_status, r.train_peaks, r.next_train),
     ]
     return "\n".join(parts)
 
@@ -39,9 +53,18 @@ def format_fullday_report(r: Report, title: str) -> str:
         f"{title} <b>{day}</b>",
         f"🕐 Generated {ts}",
         "",
-        _section_flights_summary(r.flights, r.flights_status, r.flight_peaks),
-        _section_trains_summary(r.trains, r.trains_status, r.train_peaks),
+        _section_detailed_list(
+            r.flights, r.flights_status,
+            "✈️ <b>Flights (Luxembourg-Findel)</b>",
+        ),
     ]
+    if r.time_blocks:
+        parts.append(_section_trains_by_block(r.trains, r.trains_status, r.time_blocks))
+    else:
+        parts.append(_section_detailed_list(
+            r.trains, r.trains_status,
+            "🚆 <b>Trains (Gare Centrale)</b>",
+        ))
     if r.time_blocks:
         parts.append(_section_time_blocks(r.time_blocks))
     parts.append(_section_recs(r.recommendations))
@@ -140,16 +163,29 @@ def format_next_train_report(next_train: Arrival | None) -> str:
     )
 
 
+def _format_tgv_line(tgv: Arrival) -> str:
+    """Single TGV line: date and time, e.g. 5 March 2026 Paris 12:39 → Luxembourg 14:51."""
+    lux_time = tgv.effective_time.strftime("%H:%M")
+    day_num = tgv.effective_time.day
+    month_name = tgv.effective_time.strftime("%B")
+    year = tgv.effective_time.year
+    date_str = f"{day_num} {month_name} {year}"
+    if tgv.paris_departure:
+        paris_time = tgv.paris_departure.strftime("%H:%M")
+        return f"{date_str} Paris {paris_time} → Luxembourg {lux_time}"
+    return f"{date_str} {lux_time} Paris → Luxembourg"
+
+
+def _format_next_tgv_line(tgv: Arrival) -> str:
+    """Next TGV line (same format as TGV today list)."""
+    return f"🚄 <b>Next TGV:</b> {_format_tgv_line(tgv)}"
+
+
 def _line_next_tgv(next_tgv: Arrival | None) -> str:
-    """Single line: Next TGV Paris → Luxembourg."""
+    """Single line: Next TGV Paris → Luxembourg with exact date."""
     if next_tgv is None:
         return ""
-    lux = next_tgv.effective_time.strftime("%H:%M")
-    day = next_tgv.effective_time.strftime("%a %d %b")
-    if next_tgv.paris_departure:
-        paris = next_tgv.paris_departure.strftime("%H:%M")
-        return f"🚄 <b>Next TGV:</b> Paris ({paris}) → Luxembourg ({lux}) — {day}"
-    return f"🚄 <b>Next TGV:</b> → Luxembourg ({lux}) — {day}"
+    return _format_next_tgv_line(next_tgv)
 
 
 def format_tgv_schedule(tgvs: list[Arrival], day_label: str = "today") -> str:
@@ -165,12 +201,7 @@ def format_tgv_schedule(tgvs: list[Arrival], day_label: str = "today") -> str:
         "",
     ]
     for a in tgvs:
-        lux = a.effective_time.strftime("%H:%M")
-        if a.paris_departure:
-            paris = a.paris_departure.strftime("%H:%M")
-            lines.append(f"  Paris ({paris}) → Luxembourg ({lux})  from {escape(a.origin)}")
-        else:
-            lines.append(f"  {lux}  Luxembourg  from {escape(a.origin)}")
+        lines.append(f"  {_format_tgv_line(a)}")
     return "\n".join(lines)
 
 
@@ -178,17 +209,9 @@ def format_next_tgv(tgv: Arrival | None) -> str:
     if tgv is None:
         return (
             "🚄 <b>Next TGV Paris → Luxembourg</b>\n\n"
-            "No TGV found. This can mean no TGVs left today, or train data could not be loaded.\n"
-            "Try «TGV today» for the full schedule; if that’s empty too, check that the GTFS feed URL is reachable (see .env GTFS_URL)."
+            "No TGV found. This can mean no TGVs left today, or train data could not be loaded."
         )
-    lux_time = tgv.effective_time.strftime("%H:%M")
-    day = tgv.effective_time.strftime("%a %d %b")
-    if tgv.paris_departure:
-        paris_time = tgv.paris_departure.strftime("%H:%M")
-        return (
-            f"\n\n🚄 <b>Next TGV:</b> Paris ({paris_time}) → Luxembourg ({lux_time}) — {day}"
-        )
-    return f"\n\n🚄 <b>Next TGV:</b> → Luxembourg ({lux_time}) — {day}"
+    return "\n\n" + _format_next_tgv_line(tgv)
 
 
 def _section_flights_now(
@@ -241,50 +264,19 @@ def _section_trains_now(
             )
         return f"{header}\n  No upcoming trains\n"
     lines = [f"{header} ({len(arrivals)})"]
-    for a in arrivals[:8]:
+    for a in arrivals:
         delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        lines.append(
+        line = (
             f"  {a.effective_time.strftime('%H:%M')} "
             f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
         )
-    if len(arrivals) > 8:
-        lines.append(f"  <i>+{len(arrivals) - 8} more…</i>")
+        if "TGV" in (a.identifier or "").upper():
+            line = f"  <b>{a.effective_time.strftime('%H:%M')} {escape(a.identifier)} ← {escape(a.origin)}{delay}</b>"
+        lines.append(line)
     if peaks:
         lines.append(f"  📈 Peak slot: {peaks[0].time_slot} ({peaks[0].count} trains)")
     lines.append("")
     return "\n".join(lines)
-
-
-def _section_flights_summary(
-    arrivals: list[Arrival],
-    status: SourceStatus,
-    peaks: list[DemandPeak],
-) -> str:
-    header = "✈️ <b>Flights (Luxembourg-Findel)</b>"
-    if status == SourceStatus.UNAVAILABLE:
-        return f"{header}\n  ⚠️ Data unavailable\n"
-    if not arrivals:
-        return f"{header}\n  None scheduled\n"
-    first = arrivals[0].effective_time.strftime("%H:%M")
-    last = arrivals[-1].effective_time.strftime("%H:%M")
-    peak = f" | Peak: {peaks[0].time_slot}" if peaks else ""
-    return f"{header}\n  {len(arrivals)} arrivals  {first} – {last}{peak}\n"
-
-
-def _section_trains_summary(
-    arrivals: list[Arrival],
-    status: SourceStatus,
-    peaks: list[DemandPeak],
-) -> str:
-    header = "🚆 <b>Trains (Gare Centrale)</b>"
-    if status == SourceStatus.UNAVAILABLE:
-        return f"{header}\n  ⚠️ Data unavailable\n"
-    if not arrivals:
-        return f"{header}\n  None scheduled\n"
-    first = arrivals[0].effective_time.strftime("%H:%M")
-    last = arrivals[-1].effective_time.strftime("%H:%M")
-    peak = f" | Peak: {peaks[0].time_slot}" if peaks else ""
-    return f"{header}\n  {len(arrivals)} arrivals  {first} – {last}{peak}\n"
 
 
 def _section_detailed_list(

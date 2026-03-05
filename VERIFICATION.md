@@ -25,11 +25,10 @@ Yes. The bot does not use a different timetable; it calls the same backend as th
 
 ### How it works
 
-- **Source:** The bot uses **Luxembourg public transport GTFS** (no API key).
-  - Default feed: [OpenOV Luxembourg GTFS](http://openov.lu/data/gtfs/gtfs-openov-lu.zip). This feed can have a **limited date range** (e.g. past months only). If you see “No upcoming TGV” or 0 arrivals, run `scripts/verify_tgv_times.py --verbose` and/or download the latest GTFS from [data.public.lu](https://data.public.lu/en/datasets/horaires-et-arrets-des-transport-publics-gtfs/), then set `GTFS_URL=/path/to/gtfs.zip` (or `file:///path/to/gtfs.zip`) in `.env`.
-  - Optional: set `GTFS_URL` in `.env` to use another GTFS zip URL or a local file path.
-- **Coverage:** All rail arrivals at Luxembourg Gare Centrale from the feed (CFL, TGV, etc.). TGV is identified by route name containing “TGV”.
-- **No authentication:** No Navitia or Mobiliteit API keys are required.
+- **Source (pick one):**
+  - **Open Data API:** Set `OPEN_DATA_API` in `.env` to the **full URL** of an endpoint that returns train departures as JSON (e.g. a REST API that returns an array of departures, or an object with a key like `departures` / `data`). The bot uses the same list for all trains; **next TGV** is the same data filtered to lines whose name contains “TGV”. Expected fields per item: time (e.g. `departureTime`, `scheduledTime`), line (e.g. `lineName`, `routeShortName`), origin (e.g. `direction`, `destination`). Optional: `delay` (minutes).
+  - **GTFS:** If `OPEN_DATA_API` is not set, the bot uses **Luxembourg public transport GTFS** (no API key). Set `GTFS_URL` to a zip path or URL. Default: [OpenOV Luxembourg GTFS](http://openov.lu/data/gtfs/gtfs-openov-lu.zip) (may have limited date range).
+- **Coverage:** All rail arrivals at Gare Centrale. TGV is identified by route/line name containing “TGV”.
 
 ### How to verify manually
 

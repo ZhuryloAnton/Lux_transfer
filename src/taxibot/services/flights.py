@@ -46,14 +46,6 @@ class FlightDataSource:
                 logger.warning("Airport API: could not fetch early tomorrow: %s", exc)
         return self._filter(raw, after=now)
 
-    async def fetch_tomorrow_morning(self) -> list[Arrival]:
-        now = datetime.now(tz=_LUX_TZ)
-        tomorrow = now + timedelta(days=1)
-        midnight = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
-        noon = tomorrow.replace(hour=12, minute=0, second=0, microsecond=0)
-        raw = await self._fetch_day(tomorrow.strftime("%Y-%m-%d"))
-        return [a for a in self._filter(raw, after=midnight) if a.effective_time < noon]
-
     async def fetch_tomorrow(self) -> list[Arrival]:
         now = datetime.now(tz=_LUX_TZ)
         tomorrow = now + timedelta(days=1)

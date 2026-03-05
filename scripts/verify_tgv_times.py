@@ -44,16 +44,24 @@ VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 async def main() -> None:
     from taxibot.core.http import close_session
     from taxibot.services.trains_gtfs import GTFSTrainSource
+    from taxibot.services.trains_opendata import OpenDataTrainSource
 
-    gtfs_url = os.environ.get("GTFS_URL", "").strip() or "http://openov.lu/data/gtfs/gtfs-openov-lu.zip"
-    source = GTFSTrainSource(gtfs_url=gtfs_url)
+    open_data_api = os.environ.get("OPEN_DATA_API", "").strip()
+    if open_data_api:
+        source = OpenDataTrainSource(api_url=open_data_api)
+        if VERBOSE:
+            print("Using Open Data API:", open_data_api)
+    else:
+        gtfs_url = os.environ.get("GTFS_URL", "").strip() or "http://openov.lu/data/gtfs/gtfs-openov-lu.zip"
+        source = GTFSTrainSource(gtfs_url=gtfs_url)
+        if VERBOSE:
+            print("Using GTFS:", gtfs_url)
 
     try:
-        if VERBOSE:
+        if VERBOSE and not open_data_api:
             data = await source._load_gtfs()
             if not data:
                 print("GTFS download or parse failed. Check URL and network.")
-                print(f"  URL: {gtfs_url}")
                 return
             n_today = len(data.get("arrivals_today", []))
             n_tomorrow = len(data.get("arrivals_tomorrow", []))
@@ -89,8 +97,8 @@ async def main() -> None:
             if not VERBOSE:
                 print("Run with --verbose to see why (e.g. feed date range, stop, route names):")
                 print("  PYTHONPATH=src python3 scripts/verify_tgv_times.py --verbose")
-            print("Common cause: the default feed (openov.lu) may not include the current date.")
-            print("Download the latest GTFS from data.public.lu and set GTFS_URL to the zip path.")
+            print("If using GTFS: ensure the feed includes current dates (see GTFS_URL).")
+            print("If using Open Data API: check OPEN_DATA_API URL and response format.")
             return
 
         day = tgv.effective_time.strftime("%A %d %B %Y")

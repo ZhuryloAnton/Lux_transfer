@@ -11,24 +11,23 @@ from taxibot.core.http import close_session
 from taxibot.handlers import (
     BTN_FLIGHTS,
     BTN_NEXT_TGV,
-    BTN_NEXT_TRAIN,
     BTN_NOW,
     BTN_TGV_TODAY,
     BTN_TODAY,
     BTN_TOMORROW,
     cmd_flights,
     cmd_help,
-    cmd_next_train,
     cmd_next_tgv,
     cmd_report,
     cmd_start,
     cmd_status,
     cmd_tgv,
+    cmd_trains,
     cmd_today,
     cmd_tomorrow,
     handle_button,
 )
-from taxibot.jobs import refresh_realtime_job, scheduled_report
+from taxibot.jobs import refresh_realtime_job, refresh_schedule_job, scheduled_report
 from taxibot.services import ReportPipeline
 
 logger = logging.getLogger(__name__)
@@ -47,6 +46,7 @@ def create_application(settings: Settings) -> Application:
         .build()
     )
     app.bot_data["pipeline"] = ReportPipeline(
+        open_data_api=settings.open_data_api,
         gtfs_url=settings.gtfs_url,
         gtfs_rt_url=settings.gtfs_rt_url,
         realtime_refresh_seconds=settings.realtime_refresh_seconds,
@@ -59,12 +59,12 @@ def create_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("tomorrow", cmd_tomorrow))
     app.add_handler(CommandHandler("flights", cmd_flights))
-    app.add_handler(CommandHandler("next_train", cmd_next_train))
     app.add_handler(CommandHandler("next_tgv", cmd_next_tgv))
+    app.add_handler(CommandHandler("trains", cmd_trains))
     app.add_handler(CommandHandler("tgv", cmd_tgv))
     app.add_handler(CommandHandler("status", cmd_status))
 
-    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TOMORROW}|{BTN_FLIGHTS}|{BTN_NEXT_TRAIN}|{BTN_NEXT_TGV}|{BTN_TGV_TODAY})$"
+    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TOMORROW}|{BTN_FLIGHTS}|{BTN_NEXT_TGV}|{BTN_TGV_TODAY})$"
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex(btn_pattern),
@@ -89,6 +89,15 @@ def create_application(settings: Settings) -> Application:
         name="refresh_realtime",
     )
     logger.info("Real-time delays refresh every %ds.", settings.realtime_refresh_seconds)
+
+    # Pre-download and refresh schedule (flights + trains) every 10 min for fast responses
+    app.job_queue.run_repeating(
+        refresh_schedule_job,
+        interval=settings.realtime_refresh_seconds,
+        first=15,
+        name="refresh_schedule",
+    )
+    logger.info("Schedule cache refresh every %ds.", settings.realtime_refresh_seconds)
 
     logger.info("Application ready (chat_id=%s).", settings.telegram_chat_id)
     return app

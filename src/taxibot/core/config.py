@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import field_validator, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root: from src/taxibot/core/config.py -> core, taxibot, src -> project root
@@ -29,12 +29,21 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str
     telegram_chat_id: str
+    open_data_api: str = ""
     gtfs_url: str = ""
     gtfs_rt_url: str = ""
     realtime_refresh_seconds: int = 600
 
     report_interval_hours: int = 3
     log_level: str = "INFO"
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, v: object) -> str:
+        s = (str(v).strip().upper() or "INFO")
+        if s not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            return "INFO"
+        return s
 
 
 @lru_cache(maxsize=1)

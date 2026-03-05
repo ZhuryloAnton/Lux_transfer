@@ -39,3 +39,14 @@ async def refresh_realtime_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         await pipeline.refresh_realtime()
     except Exception:
         logger.exception("Refresh realtime failed.")
+
+
+async def refresh_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Refresh schedule cache (flights + trains today/tomorrow) every 10 min. Silent background update."""
+    pipeline = context.bot_data.get("pipeline")
+    if pipeline is None:
+        return
+    try:
+        await pipeline.refresh_schedule()
+    except Exception:
+        logger.exception("Refresh schedule cache failed.")
