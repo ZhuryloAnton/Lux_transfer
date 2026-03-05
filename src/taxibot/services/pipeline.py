@@ -16,8 +16,12 @@ from taxibot.services.analyzer import (
 )
 from taxibot.services.flights import FlightDataSource
 from taxibot.services.trains_gtfs import GTFSTrainSource
-from taxibot.services.trains_opendata import OpenDataTrainSource
 from taxibot.services.trains_realtime import RealtimeDelayCache
+
+try:
+    from taxibot.services.trains_opendata import OpenDataTrainSource
+except ModuleNotFoundError:
+    OpenDataTrainSource = None  # type: ignore[misc, assignment]
 from taxibot.formatters import (
     format_flights_report,
     format_next_train_report,
@@ -113,9 +117,14 @@ class ReportPipeline:
             cache_ttl_seconds=realtime_refresh_seconds,
         )
         self._flights = FlightDataSource()
-        if open_data_api and open_data_api.strip():
+        if open_data_api and open_data_api.strip() and OpenDataTrainSource is not None:
             self._trains = OpenDataTrainSource(api_url=open_data_api.strip())
         else:
+            if open_data_api and open_data_api.strip() and OpenDataTrainSource is None:
+                logger.warning(
+                    "OPEN_DATA_API is set but trains_opendata module not found; using GTFS. "
+                    "Ensure src/taxibot/services/trains_opendata.py is in the deployment."
+                )
             self._trains = GTFSTrainSource(
                 gtfs_url=gtfs_url,
                 get_delay=self._realtime.get_delay_minutes,
