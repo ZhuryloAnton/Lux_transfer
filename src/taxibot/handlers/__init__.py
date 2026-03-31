@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -206,6 +207,17 @@ async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+async def _ensure_cache(pipeline) -> None:
+    """Refresh schedule cache if empty, with a 15s timeout so the user isn't left waiting."""
+    if pipeline._cache_has_today():
+        return
+    try:
+        await asyncio.wait_for(pipeline.refresh_schedule(), timeout=15)
+    except asyncio.TimeoutError:
+        logger.warning("refresh_schedule timed out (15s) — using whatever cache exists")
+    except Exception:
+        logger.exception("refresh_schedule failed in handler")
+
 async def _handle_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
@@ -213,8 +225,7 @@ async def _handle_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     msg = await update.message.reply_text("⏳ Fetching live data…")
     try:
-        if not pipeline._cache_has_today():
-            await pipeline.refresh_schedule()
+        await _ensure_cache(pipeline)
         flights_data = pipeline._schedule_cache.get("flights_today", ([], False))
         trains_data = pipeline._schedule_cache.get("trains_today", ([], False))
         flights, fl_ok = flights_data
@@ -270,8 +281,7 @@ async def _handle_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     msg = await update.message.reply_text("⏳ Fetching today's schedule…")
     try:
-        if not pipeline._cache_has_today():
-            await pipeline.refresh_schedule()
+        await _ensure_cache(pipeline)
         flights_data = pipeline._schedule_cache.get("flights_today", ([], False))
         trains_data = pipeline._schedule_cache.get("trains_today", ([], False))
         flights, fl_ok = flights_data
@@ -317,8 +327,7 @@ async def _handle_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     msg = await update.message.reply_text("⏳ Fetching tomorrow's schedule…")
     try:
-        if not pipeline._cache_has_today():
-            await pipeline.refresh_schedule()
+        await _ensure_cache(pipeline)
         flights_data = pipeline._schedule_cache.get("flights_tomorrow", ([], False))
         trains_data = pipeline._schedule_cache.get("trains_tomorrow", ([], False))
         flights, fl_ok = flights_data
@@ -364,8 +373,7 @@ async def _handle_flights(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     msg = await update.message.reply_text("⏳ Loading flights…")
     try:
-        if not pipeline._cache_has_today():
-            await pipeline.refresh_schedule()
+        await _ensure_cache(pipeline)
         flights_data = pipeline._schedule_cache.get("flights_today", ([], False))
         flights, ok = flights_data
         await msg.delete()

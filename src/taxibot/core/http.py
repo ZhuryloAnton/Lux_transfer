@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 _session: aiohttp.ClientSession | None = None
 
-_MAX_RETRIES = 3
-_BACKOFF_BASE = 2.0
-_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
+_MAX_RETRIES = 2
+_BACKOFF_BASE = 1.5
+_TIMEOUT = aiohttp.ClientTimeout(total=20, connect=8)
 _HEADERS = {"User-Agent": "TaxiBOT/4.0 (Luxembourg Taxi Forecast)"}
 
 
