@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
+from taxibot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 
 _LUX_TZ = pytz.timezone("Europe/Luxembourg")
 
@@ -86,6 +86,37 @@ def build_fullday_report(
         recommendations=_recs_fullday(flights, trains, blocks),
         flights_status=SourceStatus.OK if flights_ok else SourceStatus.UNAVAILABLE,
         trains_status=SourceStatus.OK if trains_ok  else SourceStatus.UNAVAILABLE,
+        time_blocks=blocks,
+    )
+
+
+def build_tomorrow_report(
+    flights: list[Arrival],
+    trains:  list[Arrival],
+    *,
+    flights_ok: bool,
+    trains_ok:  bool,
+) -> Report:
+    """Full-day report for tomorrow."""
+    now = datetime.now(tz=_LUX_TZ)
+    tomorrow = now + timedelta(days=1)
+    start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = tomorrow.replace(hour=23, minute=59, second=59)
+
+    combined = sorted(flights + trains, key=lambda a: a.effective_time)
+    blocks = _time_blocks(combined, start)
+
+    return Report(
+        generated_at=now,
+        window_start=start,
+        window_end=end,
+        flights=sorted(flights, key=lambda a: a.effective_time),
+        trains=sorted(trains, key=lambda a: a.effective_time),
+        flight_peaks=_peaks(flights, "Airport"),
+        train_peaks=_peaks(trains, "Gare Centrale"),
+        recommendations=_recs_fullday(flights, trains, blocks),
+        flights_status=SourceStatus.OK if flights_ok else SourceStatus.UNAVAILABLE,
+        trains_status=SourceStatus.OK if trains_ok else SourceStatus.UNAVAILABLE,
         time_blocks=blocks,
     )
 

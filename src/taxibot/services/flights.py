@@ -23,8 +23,8 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from models import Arrival, TransportType
-from http_client import fetch_json
+from taxibot.models import Arrival, TransportType
+from taxibot.core.http import fetch_json
 
 logger = logging.getLogger(__name__)
 

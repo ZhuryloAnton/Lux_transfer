@@ -66,3 +66,4 @@ class Report:
     time_blocks: list[TimeBlock] = field(default_factory=list)
     next_flight: Arrival | None = None
     next_train: Arrival | None = None
+    next_tgv: Arrival | None = None
