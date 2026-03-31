@@ -266,12 +266,24 @@ def _section_trains_now(
     lines = [f"{header} ({len(arrivals)})"]
     for a in arrivals:
         delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        line = (
-            f"  {a.effective_time.strftime('%H:%M')} "
-            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
+        gare_time = a.effective_time.strftime("%H:%M")
+        is_tgv_from_paris = (
+            a.identifier.upper() == "TGV"
+            and a.origin and "Paris" in a.origin
         )
-        if "TGV" in (a.identifier or "").upper():
-            line = f"  <b>{a.effective_time.strftime('%H:%M')} {escape(a.identifier)} ← {escape(a.origin)}{delay}</b>"
+        if is_tgv_from_paris:
+            paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
+            line = (
+                f"  <b>{gare_time} {escape(a.identifier)} "
+                f"(Paris({paris_time}) → Gare({gare_time})){delay}</b>"
+            )
+        elif "TGV" in (a.identifier or "").upper():
+            line = f"  <b>{gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}</b>"
+        else:
+            line = (
+                f"  {gare_time} "
+                f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
+            )
         lines.append(line)
     if peaks:
         lines.append(f"  📈 Peak slot: {peaks[0].time_slot} ({peaks[0].count} trains)")
@@ -288,6 +300,12 @@ def _section_detailed_list(
         return f"{header}\n  ⚠️ Data unavailable\n"
     if not arrivals:
         return f"{header}\n  None scheduled\n"
+
+    # For trains: list TGV/IC/ICE individually, summarize regional
+    is_trains = any(a.transport_type.value == "train" for a in arrivals)
+    if is_trains:
+        return _section_trains_detailed(arrivals, header)
+
     lines = [f"{header} — {len(arrivals)} arrival{'s' if len(arrivals)!=1 else ''}"]
     for a in arrivals:
         delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
@@ -299,18 +317,61 @@ def _section_detailed_list(
     return "\n".join(lines)
 
 
+_HIGHLIGHT_TRAINS = {"TGV", "IC", "ICE", "EC"}
+
+
+def _section_trains_detailed(arrivals: list[Arrival], header: str) -> str:
+    """TGV/IC/ICE listed individually with TGV Paris format; regional trains summarized."""
+    from collections import Counter
+
+    important = [a for a in arrivals if a.identifier.upper() in _HIGHLIGHT_TRAINS]
+    regional = [a for a in arrivals if a.identifier.upper() not in _HIGHLIGHT_TRAINS]
+
+    lines = [f"{header} ({len(arrivals)})"]
+
+    for a in important:
+        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
+        gare_time = a.effective_time.strftime("%H:%M")
+        is_tgv_from_paris = (
+            a.identifier.upper() == "TGV"
+            and a.origin and "Paris" in a.origin
+        )
+        if is_tgv_from_paris:
+            paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
+            lines.append(
+                f"  {gare_time} {escape(a.identifier)} "
+                f"(Paris({paris_time}) → Gare({gare_time})){delay}"
+            )
+        else:
+            lines.append(
+                f"  {gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}"
+            )
+
+    if regional:
+        by_type: Counter[str] = Counter(a.identifier for a in regional)
+        first = regional[0].effective_time.strftime("%H:%M")
+        last = regional[-1].effective_time.strftime("%H:%M")
+        type_parts = [f"{c} {t}" for t, c in by_type.most_common()]
+        lines.append(f"  <i>Regional ({first}–{last}): {', '.join(type_parts)}</i>")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _section_trains_by_block(
     trains: list[Arrival],
     status: SourceStatus,
     blocks: list[TimeBlock],
 ) -> str:
+    from collections import Counter
+
     header = "🚆 <b>Trains (Gare Centrale)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
     total = len(trains)
     if total == 0:
         return f"{header}\n  None scheduled\n"
-    lines = [f"{header} — {total} arrival{'s' if total!=1 else ''}"]
+    lines = [f"{header} ({total})"]
     for b in blocks:
         block_trains = [
             a for a in trains
@@ -320,12 +381,31 @@ def _section_trains_by_block(
         if not block_trains:
             continue
         block_trains.sort(key=lambda a: a.effective_time)
+        important = [a for a in block_trains if a.identifier.upper() in _HIGHLIGHT_TRAINS]
+        regional = [a for a in block_trains if a.identifier.upper() not in _HIGHLIGHT_TRAINS]
+
         lines.append(f"\n  <b>{b.label}</b> ({len(block_trains)})")
-        for a in block_trains:
-            lines.append(
-                f"    {a.effective_time.strftime('%H:%M')} "
-                f"{escape(a.identifier)} ← {escape(a.origin)}"
+        for a in important:
+            delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
+            gare_time = a.effective_time.strftime("%H:%M")
+            is_tgv_from_paris = (
+                a.identifier.upper() == "TGV"
+                and a.origin and "Paris" in a.origin
             )
+            if is_tgv_from_paris:
+                paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
+                lines.append(
+                    f"    {gare_time} {escape(a.identifier)} "
+                    f"(Paris({paris_time}) → Gare({gare_time})){delay}"
+                )
+            else:
+                lines.append(
+                    f"    {gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}"
+                )
+        if regional:
+            by_type: Counter[str] = Counter(a.identifier for a in regional)
+            type_parts = [f"{c} {t}" for t, c in by_type.most_common()]
+            lines.append(f"    <i>Regional: {', '.join(type_parts)}</i>")
     lines.append("")
     return "\n".join(lines)
 
