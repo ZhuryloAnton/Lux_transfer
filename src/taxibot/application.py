@@ -49,6 +49,7 @@ def create_application(settings: Settings) -> Application:
         open_data_api=settings.open_data_api,
         gtfs_url=settings.gtfs_url,
         gtfs_rt_url=settings.gtfs_rt_url,
+        hafas_api_key=settings.hafas_api_key,
         realtime_refresh_seconds=settings.realtime_refresh_seconds,
     )
     app.bot_data["chat_id"] = settings.telegram_chat_id

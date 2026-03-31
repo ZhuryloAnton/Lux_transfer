@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     gtfs_rt_url: str = ""
     realtime_refresh_seconds: int = 600
 
+    hafas_api_key: str = ""
     report_interval_hours: int = 3
     log_level: str = "INFO"
 

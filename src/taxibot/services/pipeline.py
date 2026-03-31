@@ -110,6 +110,7 @@ class ReportPipeline:
         open_data_api: str = "",
         gtfs_url: str = "",
         gtfs_rt_url: str = "",
+        hafas_api_key: str = "",
         realtime_refresh_seconds: int = 600,
     ) -> None:
         self._realtime = RealtimeDelayCache(
@@ -128,6 +129,7 @@ class ReportPipeline:
             self._trains = GTFSTrainSource(
                 gtfs_url=gtfs_url,
                 get_delay=self._realtime.get_delay_minutes,
+                hafas_api_key=hafas_api_key,
             )
         self._schedule_cache: dict[str, tuple[list[Arrival], bool]] = {}
         self._schedule_lock = asyncio.Lock()
