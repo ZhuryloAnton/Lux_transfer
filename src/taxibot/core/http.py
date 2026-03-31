@@ -80,6 +80,34 @@ async def fetch_bytes(url: str, *, ssl: bool = True) -> bytes:
     raise last_exc  # type: ignore[misc]
 
 
+async def fetch_text(
+    url: str,
+    *,
+    params: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+    ssl: bool = True,
+) -> str:
+    """GET *url* and return response as text. Retries on transient errors."""
+    session = await _get_session()
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            async with session.get(url, params=params, headers=headers, ssl=ssl) as resp:
+                resp.raise_for_status()
+                return await resp.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                wait = _BACKOFF_BASE ** attempt
+                logger.warning(
+                    "fetch_text %s attempt %d/%d failed (%s) — retry in %.0fs",
+                    url, attempt, _MAX_RETRIES, exc, wait,
+                )
+                await asyncio.sleep(wait)
+    logger.error("fetch_text %s failed after %d attempts: %s", url, _MAX_RETRIES, last_exc)
+    raise last_exc  # type: ignore[misc]
+
+
 async def post_json(
     url: str,
     *,

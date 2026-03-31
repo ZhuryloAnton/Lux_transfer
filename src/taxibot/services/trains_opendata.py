@@ -1,255 +1,195 @@
-"""Train arrivals from Open Data API (configurable endpoint).
+"""Train arrivals at Gare Centrale from HAFAS stboard.exe (XML scraping).
 
-Uses OPEN_DATA_API URL to fetch train departures/arrivals. Same list is used
-for all trains; get_next_tgv filters to TGV only.
+The REST API (/opendata/apiserver) is broken after server upgrade to v2.52.
+The legacy stboard.exe endpoint still works and provides:
+  - Real arrivals (boardType=arr) at Gare Centrale
+  - Real-time delay data
+  - Train type, origin, platform
+
+No API key required for stboard.exe.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import Any
 
 import pytz
 
-from taxibot.core.http import fetch_json
+from taxibot.core.http import fetch_text
 from taxibot.models import Arrival, TransportType
 
 logger = logging.getLogger(__name__)
 
 _LUX_TZ = pytz.timezone("Europe/Luxembourg")
 
+# HAFAS stboard.exe — legacy endpoint that still works
+_STBOARD_URL = "https://cdt.hafas.de/bin/stboard.exe/en"
+_GARE_CENTRALE_ID = "000200405060"
 
-def _parse_time(value: Any) -> datetime | None:
-    """Parse API time to tz-aware Luxembourg datetime. Handles ISO, HH:MM, timestamp."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(value, tz=_LUX_TZ)
-        except (ValueError, OSError):
-            return None
-    s = str(value).strip()
-    if not s:
-        return None
-    # ISO 8601 (YYYY-MM-DDTHH:MM:SS or with Z/+00:00)
-    if "T" in s:
-        try:
-            s = s.replace("Z", "+00:00").strip()
-            if "+" in s or s.endswith("-00:00"):
-                from datetime import timezone
-                dt = datetime.fromisoformat(s)
-            else:
-                dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
-                dt = _LUX_TZ.localize(dt)
-            return dt.astimezone(_LUX_TZ)
-        except Exception:
-            pass
-    # HH:MM or HH:MM:SS (use today)
-    if ":" in s:
-        parts = s.replace(".", ":").split(":")
-        try:
-            h, m = int(parts[0]), int(parts[1])
-            sec = int(parts[2]) if len(parts) > 2 else 0
-            if h >= 24:
-                h -= 24
-            now = datetime.now(tz=_LUX_TZ)
-            dt = now.replace(hour=h, minute=m, second=sec, microsecond=0)
-            if dt < now and h < 12:
-                dt += timedelta(days=1)
-            return dt
-        except (ValueError, IndexError):
-            pass
-    return None
+# TGV Paris mapping
+_PARIS_THIONVILLE_MINUTES = 95
+_TGV_PARIS_GATEWAYS = frozenset({"Thionville", "Metz"})
+
+# Train types we care about
+_TRAIN_TYPES = frozenset({
+    "ICE", "TGV", "IC", "EC", "RE", "RB", "TER", "IR", "CRE", "CRN",
+})
+
+_JOURNEY_RE = re.compile(r'<Journey ([^/]*)/?>')
 
 
-def _parse_hafas_date_time(date_str: str, time_str: str) -> datetime | None:
-    """HAFAS: date (YYYY-MM-DD) + time (HH:MM:SS or HH:MM), 24+ = next day."""
-    if not date_str or not time_str:
+def _attr(text: str, name: str) -> str:
+    """Extract attribute value from XML tag attributes string."""
+    m = re.search(rf'{name}="([^"]*)"', text)
+    return m.group(1) if m else ""
+
+
+def _clean_origin(name: str) -> str:
+    """Strip common suffixes from station names."""
+    for suffix in (", Gare Centrale", ", Gare", ", Hauptbahnhof", ", Hbf", ", Hafenstrasse"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _parse_journey(attrs: str, base_date: datetime) -> Arrival | None:
+    """Parse one <Journey .../> XML element into an Arrival."""
+    time_str = _attr(attrs, "fpTime")
+    date_str = _attr(attrs, "fpDate")
+    delay_str = _attr(attrs, "delay")
+    prod_str = _attr(attrs, "prod")
+    origin = _attr(attrs, "dir")  # for arrivals, 'dir' is where the train came from
+
+    if not time_str or not prod_str:
         return None
+
+    # Parse time
     try:
-        parts = str(time_str).strip().split(":")
+        parts = time_str.split(":")
         h, m = int(parts[0]), int(parts[1])
-        sec = int(parts[2]) if len(parts) > 2 else 0
-        day_offset = 0
-        if h >= 24:
-            h -= 24
-            day_offset = 1
-        dt = datetime.strptime(str(date_str).strip()[:10], "%Y-%m-%d")
-        dt = dt.replace(hour=h, minute=m, second=sec, microsecond=0)
-        if day_offset:
-            dt += timedelta(days=1)
-        return _LUX_TZ.localize(dt, is_dst=None)
-    except (ValueError, TypeError, IndexError):
+    except (ValueError, IndexError):
         return None
 
+    # Parse date (DD.MM.YY or use base_date)
+    if date_str:
+        try:
+            day_parts = date_str.split(".")
+            day = int(day_parts[0])
+            month = int(day_parts[1])
+            year = int(day_parts[2])
+            if year < 100:
+                year += 2000
+            dt = _LUX_TZ.localize(
+                datetime(year, month, day, h, m, 0), is_dst=None
+            )
+        except (ValueError, IndexError):
+            dt = base_date.replace(hour=h, minute=m, second=0, microsecond=0)
+    else:
+        dt = base_date.replace(hour=h, minute=m, second=0, microsecond=0)
 
-def _parse_departure(item: dict, now: datetime) -> Arrival | None:
-    """Map one API item to Arrival. Supports HAFAS (mobiliteit.lu) and generic APIs."""
-    dt = None
+    # Parse delay
     delay_minutes = 0
+    if delay_str and delay_str != "-":
+        try:
+            delay_minutes = max(0, int(delay_str))
+        except ValueError:
+            pass
 
-    # HAFAS mobiliteit.lu: date + time, optional rtDate + rtTime for delay
-    date_s = item.get("date") or item.get("Date")
-    time_s = item.get("time") or item.get("Time")
-    if date_s and time_s:
-        dt = _parse_hafas_date_time(str(date_s), str(time_s))
-        rt_date = item.get("rtDate") or item.get("RtDate")
-        rt_time = item.get("rtTime") or item.get("RtTime")
-        if dt and rt_date and rt_time:
-            rt_dt = _parse_hafas_date_time(str(rt_date), str(rt_time))
-            if rt_dt and rt_dt > dt:
-                delay_minutes = max(0, int((rt_dt - dt).total_seconds() / 60))
+    # Parse train type from prod="TGV 2816#TGV" or "RB  5634#RB"
+    prod_parts = prod_str.split("#")
+    identifier = prod_parts[0].strip()
+    category = prod_parts[1].strip() if len(prod_parts) > 1 else ""
 
-    if dt is None:
-        time_keys = (
-            "departureTime", "scheduledDepartureTime", "departure_time",
-            "scheduledTime", "time", "timestamp", "aimed_departure_time",
-        )
-        for k in time_keys:
-            dt = _parse_time(item.get(k))
-            if dt is not None:
-                break
-        for k in ("delay", "delayMinutes", "delay_minutes", "departureDelay"):
-            v = item.get(k)
-            if v is not None:
-                try:
-                    d = int(float(v))
-                    if d > 0:
-                        delay_minutes = d if d < 120 else d // 60
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-    if dt is None:
+    # Use category as identifier if cleaner (e.g. "TGV" instead of "TGV 2816")
+    train_type = category.upper() if category else identifier.split()[0].upper() if identifier else ""
+    if train_type not in _TRAIN_TYPES:
         return None
 
-    # Line/category: HAFAS has Product (list or dict) and ProductAtStop with name, catOut
-    identifier = "Train"
-    product = item.get("Product") or item.get("product")
-    if isinstance(product, list) and product and isinstance(product[0], dict):
-        product = product[0]
-    product_at_stop = item.get("ProductAtStop") or item.get("productAtStop")
-    if isinstance(product_at_stop, dict):
-        for k in ("name", "catOutS", "catOut", "line"):
-            v = product_at_stop.get(k)
-            if v is not None and str(v).strip():
-                identifier = str(v).strip()
-                break
-    if identifier == "Train" and isinstance(product, dict):
-        for k in ("name", "catOutS", "catOut", "catIn"):
-            v = product.get(k)
-            if v is not None and str(v).strip():
-                identifier = str(v).strip()
-                break
-    if identifier == "Train":
-        for k in ("name", "lineName", "line", "routeShortName", "route", "trainType", "category"):
-            v = item.get(k)
-            if v is not None and str(v).strip():
-                identifier = str(v).strip()
-                break
+    # Clean origin
+    origin_clean = _clean_origin(origin) if origin else "—"
 
-    origin = "—"
-    for k in ("direction", "Direction", "destination", "origin", "from", "stopPointName"):
-        v = item.get(k)
-        if v is not None and str(v).strip():
-            origin = str(v).strip()
-            break
+    # TGV Paris mapping
+    paris_dep: datetime | None = None
+    if train_type == "TGV" and any(gw in origin_clean for gw in _TGV_PARIS_GATEWAYS):
+        paris_dep = dt - timedelta(minutes=_PARIS_THIONVILLE_MINUTES)
+        origin_clean = f"Paris Est (via {origin_clean})"
 
     return Arrival(
         transport_type=TransportType.TRAIN,
         scheduled_time=dt,
-        identifier=identifier,
-        origin=origin,
+        identifier=train_type,
+        origin=origin_clean,
         status="scheduled",
         delay_minutes=delay_minutes,
+        paris_departure=paris_dep,
     )
 
 
-def _extract_list(data: Any) -> list[dict]:
-    """Get list of departure items from API response. HAFAS uses 'Departure'."""
-    if isinstance(data, list):
-        return data
-    if not isinstance(data, dict):
+async def _fetch_stboard(max_journeys: int = 80) -> list[Arrival]:
+    """Fetch arrivals at Gare Centrale via stboard.exe XML endpoint."""
+    params = {
+        "boardType": "arr",
+        "input": _GARE_CENTRALE_ID,
+        "maxJourneys": str(max_journeys),
+        "start": "yes",
+        "L": "vs_java3",
+    }
+    try:
+        body = await fetch_text(_STBOARD_URL, params=params, ssl=False)
+    except Exception as e:
+        logger.warning("stboard.exe fetch failed: %s", e)
         return []
-    for key in ("Departure", "departure", "departures", "Departures", "data", "results", "trains", "stopTimes"):
-        val = data.get(key)
-        if isinstance(val, list):
-            return val
-        if isinstance(val, dict):
-            return [val]
-    return []
+
+    now = datetime.now(tz=_LUX_TZ)
+    base_date = now.replace(second=0, microsecond=0)
+
+    arrivals: list[Arrival] = []
+    for m in _JOURNEY_RE.finditer(body):
+        a = _parse_journey(m.group(1), base_date)
+        if a is not None:
+            arrivals.append(a)
+
+    arrivals.sort(key=lambda x: x.effective_time)
+    delayed = sum(1 for a in arrivals if a.delay_minutes > 0)
+    logger.info("stboard.exe: %d arrivals (%d delayed)", len(arrivals), delayed)
+    return arrivals
 
 
 class OpenDataTrainSource:
-    """Train data from Open Data API. Fetches once per request; get_next_tgv filters to TGV."""
+    """Train arrivals from HAFAS stboard.exe (legacy XML endpoint).
+
+    Works without API key. Provides real-time delays when available.
+    """
 
     def __init__(self, api_url: str = "") -> None:
-        self._url = (api_url or "").strip().rstrip("/")
-
-    async def _fetch_departures(self, date: datetime | None = None) -> list[Arrival]:
-        """Fetch departures from API. If date is set, request that day (for tomorrow)."""
-        if not self._url:
-            logger.warning("OPEN_DATA_API URL not set")
-            return []
-        use_ssl = "cdt.hafas.de" not in self._url
-        params: dict[str, str] = {}
-        if date is not None:
-            # HAFAS-style APIs often accept date/time so we get that day's departures
-            params["date"] = date.strftime("%Y-%m-%d")
-            params["time"] = "00:00"
-        try:
-            data = await fetch_json(self._url, params=params or None, ssl=use_ssl)
-        except Exception as e:
-            logger.warning("Open Data API fetch failed: %s", e)
-            return []
-        items = _extract_list(data)
-        now = datetime.now(tz=_LUX_TZ)
-        arrivals: list[Arrival] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            a = _parse_departure(item, now)
-            if a is not None:
-                arrivals.append(a)
-        arrivals.sort(key=lambda x: x.effective_time)
-        logger.info("Open Data API: %d train departures", len(arrivals))
-        return arrivals
+        # api_url is kept for interface compatibility but we use stboard.exe directly
+        self._api_url = api_url
 
     async def fetch_today(self) -> list[Arrival]:
-        """Trains for today (effective_time >= now, same calendar day)."""
-        arrivals = await self._fetch_departures(date=None)
+        """Trains arriving today (effective_time >= now)."""
+        arrivals = await _fetch_stboard(max_journeys=80)
         now = datetime.now(tz=_LUX_TZ)
         today = now.date()
         return [a for a in arrivals if a.effective_time >= now and a.effective_time.date() == today]
 
     async def fetch_tomorrow(self) -> list[Arrival]:
-        """Trains for tomorrow — request API for tomorrow's date when supported, else filter from default response."""
-        tomorrow_dt = datetime.now(tz=_LUX_TZ) + timedelta(days=1)
-        tomorrow_start = tomorrow_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        arrivals = await self._fetch_departures(date=tomorrow_start)
-        tomorrow = tomorrow_dt.date()
-        result = [a for a in arrivals if a.effective_time.date() == tomorrow]
-        if not result and arrivals:
-            # API may ignore date param; use default response and filter
-            arrivals_default = await self._fetch_departures(date=None)
-            result = [a for a in arrivals_default if a.effective_time.date() == tomorrow]
-        return result
+        """Trains for tomorrow — stboard only shows near-future, so may be empty."""
+        arrivals = await _fetch_stboard(max_journeys=100)
+        tomorrow = (datetime.now(tz=_LUX_TZ) + timedelta(days=1)).date()
+        return [a for a in arrivals if a.effective_time.date() == tomorrow]
 
     async def get_next_train(self) -> Arrival | None:
-        """Next train (any type) — today or tomorrow."""
-        arrivals = await self._fetch_departures()
+        """Next train (any type)."""
+        arrivals = await _fetch_stboard(max_journeys=20)
         now = datetime.now(tz=_LUX_TZ)
         future = [a for a in arrivals if a.effective_time > now]
-        if not future:
-            return None
-        return min(future, key=lambda a: a.effective_time)
+        return min(future, key=lambda a: a.effective_time) if future else None
 
     async def get_next_tgv(self) -> Arrival | None:
-        """Next TGV only — same API, filter to line name containing TGV."""
-        arrivals = await self._fetch_departures()
+        """Next TGV only."""
+        arrivals = await _fetch_stboard(max_journeys=80)
         now = datetime.now(tz=_LUX_TZ)
-        tgvs = [a for a in arrivals if a.effective_time > now and "TGV" in a.identifier.upper()]
-        if not tgvs:
-            return None
-        return min(tgvs, key=lambda a: a.effective_time)
+        tgvs = [a for a in arrivals if a.effective_time > now and a.identifier == "TGV"]
+        return min(tgvs, key=lambda a: a.effective_time) if tgvs else None
