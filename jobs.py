@@ -1,4 +1,4 @@
-"""Scheduled auto-report job — fires every N hours and posts to the group chat."""
+"""Scheduled jobs: schedule cache refresh (every 10 min) and auto-report (every N hours)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,17 @@ from telegram.ext import ContextTypes
 from text import split_message
 
 logger = logging.getLogger(__name__)
+
+
+async def refresh_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Refresh schedule cache (flights + trains) every 10 min. Silent background update."""
+    pipeline = context.bot_data.get("pipeline")
+    if pipeline is None:
+        return
+    try:
+        await pipeline.refresh_cache()
+    except Exception:
+        logger.exception("Schedule cache refresh job failed")
 
 
 async def scheduled_report(context: ContextTypes.DEFAULT_TYPE) -> None:

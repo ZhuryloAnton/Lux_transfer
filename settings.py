@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Optional with sensible defaults
     report_interval_hours: int = 3   # 0 = disable auto-reports
     log_level: str = "INFO"
+    hafas_api_key: str = ""          # Luxembourg HAFAS real-time delays (request from opendata-api@atp.etat.lu)
 
 
 @lru_cache(maxsize=1)

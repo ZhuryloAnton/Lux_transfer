@@ -11,21 +11,19 @@ import logging
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from handlers import (
-    BTN_FLIGHTS,
     BTN_NOW,
     BTN_TODAY,
-    BTN_TOMORROW,
-    cmd_flights,
+    BTN_TODAY_TGV,
     cmd_help,
     cmd_report,
     cmd_start,
     cmd_status,
     cmd_today,
-    cmd_tomorrow,
+    cmd_today_tgv,
     handle_button,
 )
 from settings import Settings
-from jobs import scheduled_report
+from jobs import refresh_schedule_job, scheduled_report
 from pipeline import ReportPipeline
 from http_client import close_session
 
@@ -55,12 +53,11 @@ def create_application(settings: Settings) -> Application:  # type: ignore[type-
     app.add_handler(CommandHandler("help",     cmd_help))
     app.add_handler(CommandHandler("report",   cmd_report))
     app.add_handler(CommandHandler("today",    cmd_today))
-    app.add_handler(CommandHandler("tomorrow", cmd_tomorrow))
-    app.add_handler(CommandHandler("flights",  cmd_flights))
+    app.add_handler(CommandHandler("today_tgv", cmd_today_tgv))
     app.add_handler(CommandHandler("status",   cmd_status))
 
     # ── Keyboard buttons ──────────────────────────────────────────────
-    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TOMORROW}|{BTN_FLIGHTS})$"
+    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TODAY_TGV})$"
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex(btn_pattern),
@@ -68,12 +65,21 @@ def create_application(settings: Settings) -> Application:  # type: ignore[type-
         )
     )
 
+    # ── Schedule cache: refresh every 10 min (first run 30s after startup)
+    app.job_queue.run_repeating(
+        refresh_schedule_job,
+        interval=600,   # 10 minutes
+        first=30,       # warm cache 30s after startup
+        name="refresh_schedule",
+    )
+    logger.info("Schedule cache refresh every 10 min.")
+
     # ── Auto-report scheduler ─────────────────────────────────────────
     if settings.report_interval_hours > 0:
         app.job_queue.run_repeating(
             scheduled_report,
             interval=settings.report_interval_hours * 3600,
-            first=60,          # first run 60s after startup
+            first=60,
             name="auto_report",
         )
         logger.info("Auto-report every %dh.", settings.report_interval_hours)

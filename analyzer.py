@@ -1,8 +1,8 @@
 """Build Report objects from raw Arrival lists.
 
 Pure data logic — no I/O, no framework dependencies.
-  build_now_report()      → 3-hour window report
-  build_tomorrow_report() → full-day tomorrow report
+  build_now_report()    → 3-hour window report
+  build_fullday_report() → full-day report (today).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def build_fullday_report(
     trains_ok:  bool,
     day: datetime,
 ) -> Report:
-    """Full-day report — used for both Today and Tomorrow."""
+    """Full-day report — used for Today schedule."""
     now   = datetime.now(tz=_LUX_TZ)
     start = day.replace(hour=0, minute=0, second=0, microsecond=0)
     end   = day.replace(hour=23, minute=59, second=59)
@@ -87,22 +87,6 @@ def build_fullday_report(
         flights_status=SourceStatus.OK if flights_ok else SourceStatus.UNAVAILABLE,
         trains_status=SourceStatus.OK if trains_ok  else SourceStatus.UNAVAILABLE,
         time_blocks=blocks,
-    )
-
-
-def build_tomorrow_report(
-    flights: list[Arrival],
-    trains:  list[Arrival],
-    *,
-    flights_ok: bool,
-    trains_ok:  bool,
-) -> Report:
-    now = datetime.now(tz=_LUX_TZ)
-    tomorrow = (now + timedelta(days=1))
-    return build_fullday_report(
-        flights, trains,
-        flights_ok=flights_ok, trains_ok=trains_ok,
-        day=tomorrow,
     )
 
 

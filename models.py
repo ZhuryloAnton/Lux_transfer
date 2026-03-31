@@ -25,6 +25,7 @@ class Arrival:
     origin: str                    # city / airport the service comes from
     status: str = "scheduled"
     delay_minutes: int = 0
+    paris_departure: datetime | None = None  # for TGV from Paris: departure time at Paris
 
     @property
     def effective_time(self) -> datetime:
