@@ -10,6 +10,8 @@ from taxibot.core.text import escape
 from taxibot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 
 _NO_DATA = "⚠️ Data temporarily unavailable."
+_SEP = "─────────────────────────"
+_FLIGHTS_PER_PAGE = 5
 
 
 def format_now_report(r: Report) -> str:
@@ -19,25 +21,32 @@ def format_now_report(r: Report) -> str:
         return f"📊 <b>Next 3 Hours</b>\n🕐 {ts}\n\n{_NO_DATA}"
     parts = [
         f"📊 <b>Next 3 Hours</b>",
-        f"🕐 {ts}   📅 {win}",
+        f"🕐 {ts}",
+        f"📅 {win}",
         "",
         _section_flights_now(r.flights, r.flights_status, r.flight_peaks, r.next_flight),
+        _SEP,
+        "",
         _section_trains_now(r.trains, r.trains_status, r.train_peaks, r.next_train),
         _line_next_tgv(r.next_tgv),
+        "",
+        _SEP,
+        "",
         _section_recs(r.recommendations),
     ]
     return "\n".join(parts)
 
 
 def format_trains_next_3h(r: Report) -> str:
-    """Trains only for the next 3 hours (same format as in Next 3 Hours, no button)."""
+    """TGV only for the next 3 hours."""
     ts = r.generated_at.strftime("%A %d %b %Y, %H:%M")
     win = f"{r.window_start.strftime('%H:%M')} – {r.window_end.strftime('%H:%M')}"
     if r.trains_status == SourceStatus.UNAVAILABLE:
-        return f"🚆 <b>Trains — Next 3 Hours</b>\n🕐 {ts}   📅 {win}\n\n  ⚠️ Data unavailable"
+        return f"🚄 <b>TGV — Next 3 Hours</b>\n🕐 {ts}\n📅 {win}\n\n  ⚠️ Data unavailable"
     parts = [
-        "🚆 <b>Trains — Next 3 Hours</b>",
-        f"🕐 {ts}   📅 {win}",
+        "🚄 <b>TGV — Next 3 Hours</b>",
+        f"🕐 {ts}",
+        f"📅 {win}",
         "",
         _section_trains_now(r.trains, r.trains_status, r.train_peaks, r.next_train),
     ]
@@ -57,14 +66,19 @@ def format_fullday_report(r: Report, title: str) -> str:
             r.flights, r.flights_status,
             "✈️ <b>Flights (Luxembourg-Findel)</b>",
         ),
+        _SEP,
+        "",
     ]
     if r.time_blocks:
         parts.append(_section_trains_by_block(r.trains, r.trains_status, r.time_blocks))
     else:
         parts.append(_section_detailed_list(
             r.trains, r.trains_status,
-            "🚆 <b>Trains (Gare Centrale)</b>",
+            "🚄 <b>TGV (Gare Centrale)</b>",
         ))
+    parts.append("")
+    parts.append(_SEP)
+    parts.append("")
     if r.time_blocks:
         parts.append(_section_time_blocks(r.time_blocks))
     parts.append(_section_recs(r.recommendations))
@@ -89,38 +103,99 @@ def format_tomorrow_report(r: Report) -> str:
         r.flights, r.flights_status,
         "✈️ <b>Flights (Luxembourg-Findel)</b>",
     ))
+    parts.append(_SEP)
+    parts.append("")
     if r.time_blocks:
         parts.append(_section_trains_by_block(r.trains, r.trains_status, r.time_blocks))
     else:
         parts.append(_section_detailed_list(
             r.trains, r.trains_status,
-            "🚆 <b>Trains (Gare Centrale)</b>",
+            "🚄 <b>TGV (Gare Centrale)</b>",
         ))
+    parts.append("")
+    parts.append(_SEP)
+    parts.append("")
     parts.append(_section_recs(r.recommendations))
     return "\n".join(parts)
 
 
-def format_flights_report(flights: list[Arrival], ok: bool) -> str:
+def _format_flight_line(a: Arrival) -> str:
+    """Format a single flight in flight-board style (2 lines for mobile)."""
+    sched = a.scheduled_time.strftime("%H:%M")
+    ident = escape(a.identifier)
+    origin = escape(a.origin)
+
+    if a.is_cancelled:
+        return (
+            f"  {ident} ← {origin}\n"
+            f"  {sched}  ❌ Cancelled"
+        )
+
+    if a.delay_minutes >= 5:
+        est = a.effective_time.strftime("%H:%M")
+        return (
+            f"  {ident} ← {origin}\n"
+            f"  {sched} → {est}  ⏱ +{a.delay_minutes}m"
+        )
+
+    return (
+        f"  {ident} ← {origin}\n"
+        f"  {sched}  ✅ On Time"
+    )
+
+
+# ── Paginated flights ─────────────────────────────────────────────────────────
+
+def _flights_header(flights: list[Arrival]) -> str:
+    active = [a for a in flights if not a.is_cancelled]
+    cancelled = len(flights) - len(active)
+    count_label = f"{len(active)} arrival{'s' if len(active)!=1 else ''}"
+    if cancelled:
+        count_label += f", {cancelled} cancelled"
+    return count_label
+
+
+def format_flights_page(
+    flights: list[Arrival],
+    ok: bool,
+    page: int = 0,
+    header_title: str = "✈️ <b>Flights — Luxembourg-Findel</b>",
+) -> tuple[str, int]:
+    """Return (text, total_pages) for a page of flights."""
     now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
     ts = now.strftime("%A %d %b %Y, %H:%M")
-    header = "✈️ <b>Flights — Luxembourg-Findel International Airport</b>"
     if not ok:
-        return f"{header}\n🕐 {ts}\n\n  ⚠️ Data unavailable"
+        return f"{header_title}\n🕐 {ts}\n\n  ⚠️ Data unavailable", 1
     if not flights:
-        return f"{header}\n🕐 {ts}\n\n  No upcoming flights today"
-    lines = [
-        header,
-        f"🕐 {ts}   ({len(flights)} arrival{'s' if len(flights)!=1 else ''})",
-        "",
-    ]
-    for a in flights:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        lines.append(
-            f"  {a.effective_time.strftime('%H:%M')} "
-            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
-        )
-    return "\n".join(lines)
+        return f"{header_title}\n🕐 {ts}\n\n  No upcoming flights", 1
 
+    total_pages = max(1, (len(flights) + _FLIGHTS_PER_PAGE - 1) // _FLIGHTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * _FLIGHTS_PER_PAGE
+    end = start + _FLIGHTS_PER_PAGE
+    page_flights = flights[start:end]
+
+    count_label = _flights_header(flights)
+    lines = [
+        header_title,
+        f"🕐 {ts}",
+        f"({count_label})",
+    ]
+    if total_pages > 1:
+        lines.append(f"📄 Page {page + 1}/{total_pages}")
+    lines.append("")
+    for a in page_flights:
+        lines.append(_format_flight_line(a))
+    return "\n".join(lines), total_pages
+
+
+def format_flights_report(flights: list[Arrival], ok: bool) -> str:
+    """Back-compat: full flights report (page 0, no buttons)."""
+    text, _ = format_flights_page(flights, ok)
+    return text
+
+
+# ── TGV ───────────────────────────────────────────────────────────────────────
 
 def _date_label(dt: datetime) -> str:
     """Label for when the train runs: Today, Tomorrow, or weekday + date."""
@@ -137,7 +212,6 @@ def _date_label(dt: datetime) -> str:
 
 
 def _line_next_train(next_train: Arrival | None) -> str:
-    """Single line: Next train at Gare Centrale (any type), with date when it runs."""
     if next_train is None:
         return ""
     when = _date_label(next_train.effective_time)
@@ -147,7 +221,6 @@ def _line_next_train(next_train: Arrival | None) -> str:
 
 
 def format_next_train_report(next_train: Arrival | None) -> str:
-    """Single message: next train (any type) whenever it is — today, tomorrow or later."""
     if next_train is None:
         return (
             "🚆 <b>Next train — Gare Centrale</b>\n\n"
@@ -164,7 +237,6 @@ def format_next_train_report(next_train: Arrival | None) -> str:
 
 
 def _format_tgv_line(tgv: Arrival) -> str:
-    """Single TGV line: date and time, e.g. 5 March 2026 Paris 12:39 → Luxembourg 14:51."""
     lux_time = tgv.effective_time.strftime("%H:%M")
     day_num = tgv.effective_time.day
     month_name = tgv.effective_time.strftime("%B")
@@ -172,36 +244,53 @@ def _format_tgv_line(tgv: Arrival) -> str:
     date_str = f"{day_num} {month_name} {year}"
     if tgv.paris_departure:
         paris_time = tgv.paris_departure.strftime("%H:%M")
-        return f"{date_str} Paris {paris_time} → Luxembourg {lux_time}"
-    return f"{date_str} {lux_time} Paris → Luxembourg"
+        return f"{date_str}\nParis {paris_time} → Luxembourg {lux_time}"
+    return f"{date_str}\n{lux_time} Paris → Luxembourg"
 
 
 def _format_next_tgv_line(tgv: Arrival) -> str:
-    """Next TGV line (same format as TGV today list)."""
-    return f"🚄 <b>Next TGV:</b> {_format_tgv_line(tgv)}"
+    return f"🚄 <b>Next TGV:</b>\n{_format_tgv_line(tgv)}"
 
 
 def _line_next_tgv(next_tgv: Arrival | None) -> str:
-    """Single line: Next TGV Paris → Luxembourg with exact date."""
     if next_tgv is None:
         return ""
     return _format_next_tgv_line(next_tgv)
 
 
+def _format_tgv_board_line(a: Arrival) -> str:
+    """Format a single TGV in flight-board style (2 lines for mobile)."""
+    gare_time = a.effective_time.strftime("%H:%M")
+
+    if a.paris_departure:
+        paris_time = a.paris_departure.strftime("%H:%M")
+        route = f"  Paris ({paris_time}) → Luxembourg ({gare_time})"
+    else:
+        route = f"  {escape(a.origin)} → Luxembourg ({gare_time})"
+
+    if a.delay_minutes >= 5:
+        sched = a.scheduled_time.strftime("%H:%M")
+        return f"{route}\n  {sched} → {gare_time}  ⏱ +{a.delay_minutes}m"
+
+    return f"{route}\n  ✅ On Time"
+
+
 def format_tgv_schedule(tgvs: list[Arrival], day_label: str = "today") -> str:
-    """Full daily TGV schedule (Paris → Luxembourg)."""
     now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
     ts = now.strftime("%A %d %b %Y, %H:%M")
-    header = "🚄 <b>TGV today — Paris → Luxembourg (Gare Centrale)</b>"
+    header = "🚄 <b>TGV today</b>"
+    sub = "<b>Paris → Luxembourg (Gare Centrale)</b>"
     if not tgvs:
-        return f"{header}\n🕐 {ts}\n\n  No TGV in schedule today."
+        return f"{header}\n{sub}\n🕐 {ts}\n\n  No TGV in schedule today."
     lines = [
         header,
-        f"🕐 {ts}   ({len(tgvs)} TGV)",
+        sub,
+        f"🕐 {ts}",
+        f"({len(tgvs)} TGV)",
         "",
     ]
     for a in tgvs:
-        lines.append(f"  {_format_tgv_line(a)}")
+        lines.append(_format_tgv_board_line(a))
     return "\n".join(lines)
 
 
@@ -214,13 +303,15 @@ def format_next_tgv(tgv: Arrival | None) -> str:
     return "\n\n" + _format_next_tgv_line(tgv)
 
 
+# ── Section builders ──────────────────────────────────────────────────────────
+
 def _section_flights_now(
     arrivals: list[Arrival],
     status: SourceStatus,
     peaks: list[DemandPeak],
     next_arrival: Arrival | None,
 ) -> str:
-    header = "✈️ <b>Flights (Luxembourg-Findel International Airport)</b>"
+    header = "✈️ <b>Flights (Luxembourg-Findel)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
     if not arrivals:
@@ -228,20 +319,22 @@ def _section_flights_now(
             t = next_arrival.effective_time.strftime("%H:%M")
             return (
                 f"{header}\n  Nothing in the next 3h\n"
-                f"  Next: {t} — {escape(next_arrival.identifier)} from {escape(next_arrival.origin)}\n"
+                f"  Next: {t} — {escape(next_arrival.identifier)}\n"
+                f"  from {escape(next_arrival.origin)}\n"
             )
         return f"{header}\n  No upcoming flights\n"
-    lines = [f"{header} ({len(arrivals)})"]
-    for a in arrivals[:8]:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        lines.append(
-            f"  {a.effective_time.strftime('%H:%M')} "
-            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
-        )
-    if len(arrivals) > 8:
-        lines.append(f"  <i>+{len(arrivals) - 8} more…</i>")
+    active = [a for a in arrivals if not a.is_cancelled]
+    cancelled = len(arrivals) - len(active)
+    count_str = str(len(active))
+    if cancelled:
+        count_str += f", {cancelled} cancelled"
+    lines = [f"{header}", f"({count_str})", ""]
+    for a in arrivals[:_FLIGHTS_PER_PAGE]:
+        lines.append(_format_flight_line(a))
+    if len(arrivals) > _FLIGHTS_PER_PAGE:
+        lines.append(f"\n  <i>+{len(arrivals) - _FLIGHTS_PER_PAGE} more…</i>")
     if peaks:
-        lines.append(f"  📈 Peak slot: {peaks[0].time_slot} ({peaks[0].count} flights)")
+        lines.append(f"\n  📈 Peak: {peaks[0].time_slot} ({peaks[0].count} flights)")
     lines.append("")
     return "\n".join(lines)
 
@@ -252,41 +345,15 @@ def _section_trains_now(
     peaks: list[DemandPeak],
     next_arrival: Arrival | None,
 ) -> str:
-    header = "🚆 <b>Trains (Gare Centrale)</b>"
+    header = "🚄 <b>TGV (Gare Centrale)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
-    if not arrivals:
-        if next_arrival:
-            t = next_arrival.effective_time.strftime("%H:%M")
-            return (
-                f"{header}\n  Nothing in the next 3h\n"
-                f"  Next: {t} — {escape(next_arrival.identifier)} from {escape(next_arrival.origin)}\n"
-            )
-        return f"{header}\n  No upcoming trains\n"
-    lines = [f"{header} ({len(arrivals)})"]
-    for a in arrivals:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        gare_time = a.effective_time.strftime("%H:%M")
-        is_tgv_from_paris = (
-            a.identifier.upper() == "TGV"
-            and a.origin and "Paris" in a.origin
-        )
-        if is_tgv_from_paris:
-            paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
-            line = (
-                f"  <b>{gare_time} {escape(a.identifier)} "
-                f"(Paris({paris_time}) → Gare({gare_time})){delay}</b>"
-            )
-        elif "TGV" in (a.identifier or "").upper():
-            line = f"  <b>{gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}</b>"
-        else:
-            line = (
-                f"  {gare_time} "
-                f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
-            )
-        lines.append(line)
-    if peaks:
-        lines.append(f"  📈 Peak slot: {peaks[0].time_slot} ({peaks[0].count} trains)")
+    tgvs = [a for a in arrivals if a.identifier.upper() == "TGV"]
+    if not tgvs:
+        return f"{header}\n  No TGV in the next 3h\n"
+    lines = [f"{header}", ""]
+    for a in tgvs:
+        lines.append(_format_tgv_board_line(a))
     lines.append("")
     return "\n".join(lines)
 
@@ -301,59 +368,27 @@ def _section_detailed_list(
     if not arrivals:
         return f"{header}\n  None scheduled\n"
 
-    # For trains: list TGV/IC/ICE individually, summarize regional
     is_trains = any(a.transport_type.value == "train" for a in arrivals)
     if is_trains:
-        return _section_trains_detailed(arrivals, header)
+        return _section_trains_tgv_only(arrivals, header)
 
-    lines = [f"{header} — {len(arrivals)} arrival{'s' if len(arrivals)!=1 else ''}"]
-    for a in arrivals:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        lines.append(
-            f"  {a.effective_time.strftime('%H:%M')} "
-            f"{escape(a.identifier)} ← {escape(a.origin)}{delay}"
-        )
-    lines.append("")
-    return "\n".join(lines)
+    # Flights — show first page only, handler adds pagination buttons
+    text, total_pages = format_flights_page(
+        arrivals, ok=True, page=0, header_title=header,
+    )
+    if total_pages > 1:
+        text += f"\n\n  <i>Page 1/{total_pages} — use buttons below</i>"
+    return text + "\n"
 
 
-_HIGHLIGHT_TRAINS = {"TGV", "IC", "ICE", "EC"}
-
-
-def _section_trains_detailed(arrivals: list[Arrival], header: str) -> str:
-    """TGV/IC/ICE listed individually with TGV Paris format; regional trains summarized."""
-    from collections import Counter
-
-    important = [a for a in arrivals if a.identifier.upper() in _HIGHLIGHT_TRAINS]
-    regional = [a for a in arrivals if a.identifier.upper() not in _HIGHLIGHT_TRAINS]
-
-    lines = [f"{header} ({len(arrivals)})"]
-
-    for a in important:
-        delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-        gare_time = a.effective_time.strftime("%H:%M")
-        is_tgv_from_paris = (
-            a.identifier.upper() == "TGV"
-            and a.origin and "Paris" in a.origin
-        )
-        if is_tgv_from_paris:
-            paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
-            lines.append(
-                f"  {gare_time} {escape(a.identifier)} "
-                f"(Paris({paris_time}) → Gare({gare_time})){delay}"
-            )
-        else:
-            lines.append(
-                f"  {gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}"
-            )
-
-    if regional:
-        by_type: Counter[str] = Counter(a.identifier for a in regional)
-        first = regional[0].effective_time.strftime("%H:%M")
-        last = regional[-1].effective_time.strftime("%H:%M")
-        type_parts = [f"{c} {t}" for t, c in by_type.most_common()]
-        lines.append(f"  <i>Regional ({first}–{last}): {', '.join(type_parts)}</i>")
-
+def _section_trains_tgv_only(arrivals: list[Arrival], header: str) -> str:
+    tgvs = [a for a in arrivals if a.identifier.upper() == "TGV"]
+    header = "🚄 <b>TGV (Gare Centrale)</b>"
+    if not tgvs:
+        return f"{header}\n  No TGV scheduled\n"
+    lines = [f"{header} ({len(tgvs)})", ""]
+    for a in tgvs:
+        lines.append(_format_tgv_board_line(a))
     lines.append("")
     return "\n".join(lines)
 
@@ -363,49 +398,15 @@ def _section_trains_by_block(
     status: SourceStatus,
     blocks: list[TimeBlock],
 ) -> str:
-    from collections import Counter
-
-    header = "🚆 <b>Trains (Gare Centrale)</b>"
+    header = "🚄 <b>TGV (Gare Centrale)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
-    total = len(trains)
-    if total == 0:
-        return f"{header}\n  None scheduled\n"
-    lines = [f"{header} ({total})"]
-    for b in blocks:
-        block_trains = [
-            a for a in trains
-            if a.effective_time.hour >= b.start_hour
-            and a.effective_time.hour < (b.end_hour if b.end_hour < 24 else 24)
-        ]
-        if not block_trains:
-            continue
-        block_trains.sort(key=lambda a: a.effective_time)
-        important = [a for a in block_trains if a.identifier.upper() in _HIGHLIGHT_TRAINS]
-        regional = [a for a in block_trains if a.identifier.upper() not in _HIGHLIGHT_TRAINS]
-
-        lines.append(f"\n  <b>{b.label}</b> ({len(block_trains)})")
-        for a in important:
-            delay = f" ⏱+{a.delay_minutes}m" if a.delay_minutes else ""
-            gare_time = a.effective_time.strftime("%H:%M")
-            is_tgv_from_paris = (
-                a.identifier.upper() == "TGV"
-                and a.origin and "Paris" in a.origin
-            )
-            if is_tgv_from_paris:
-                paris_time = a.paris_departure.strftime("%H:%M") if a.paris_departure else "?"
-                lines.append(
-                    f"    {gare_time} {escape(a.identifier)} "
-                    f"(Paris({paris_time}) → Gare({gare_time})){delay}"
-                )
-            else:
-                lines.append(
-                    f"    {gare_time} {escape(a.identifier)} ← {escape(a.origin)}{delay}"
-                )
-        if regional:
-            by_type: Counter[str] = Counter(a.identifier for a in regional)
-            type_parts = [f"{c} {t}" for t, c in by_type.most_common()]
-            lines.append(f"    <i>Regional: {', '.join(type_parts)}</i>")
+    tgvs = [a for a in trains if a.identifier.upper() == "TGV"]
+    if not tgvs:
+        return f"{header}\n  No TGV scheduled\n"
+    lines = [f"{header} ({len(tgvs)})", ""]
+    for a in tgvs:
+        lines.append(_format_tgv_board_line(a))
     lines.append("")
     return "\n".join(lines)
 
@@ -413,26 +414,124 @@ def _section_trains_by_block(
 def _section_time_blocks(blocks: list[TimeBlock]) -> str:
     lines = ["📊 <b>By Period</b>"]
     for b in blocks:
-        if b.count == 0:
+        fl = sum(1 for a in b.arrivals if a.transport_type.value == "flight" and not a.is_cancelled)
+        tgv = sum(1 for a in b.arrivals if a.transport_type.value == "train" and a.identifier.upper() == "TGV")
+        total = fl + tgv
+        if total == 0:
             lines.append(f"  ▫ {b.label}: quiet")
         else:
-            fl = sum(1 for a in b.arrivals if a.transport_type.value == "flight")
-            tr = sum(1 for a in b.arrivals if a.transport_type.value == "train")
             detail = "  ".join(
-                p for p in [f"{fl} ✈️" if fl else "", f"{tr} 🚆" if tr else ""] if p
+                p for p in [f"{fl} ✈️" if fl else "", f"{tgv} 🚄" if tgv else ""] if p
             )
-            lines.append(f"  ▸ {b.label}: {b.count} arrivals  ({detail})")
+            lines.append(f"  ▸ {b.label}: {total} arrival{'s' if total != 1 else ''}  ({detail})")
     lines.append("")
     return "\n".join(lines)
 
 
 def _section_recs(recs: list[str]) -> str:
     if not recs:
-        return "🚖 <b>Tip:</b> Standard positioning"
-    lines = ["🚖 <b>Positioning Tips</b>"]
+        return "🚖 <b>Tip:</b>\nStandard positioning"
+    lines = ["🚖 <b>Positioning Tips</b>", ""]
     for r in recs:
-        lines.append(f"  ▸ {r}")
+        lines.append(f"▸ {r}")
     return "\n".join(lines)
+
+
+def format_tgv_message(
+    trains: list[Arrival],
+    trains_ok: bool,
+    *,
+    next_tgv: Arrival | None = None,
+    title: str = "🚄 <b>TGV — Gare Centrale</b>",
+) -> str:
+    """Standalone TGV message (message 2 of 3)."""
+    now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
+    ts = now.strftime("%H:%M")
+    if not trains_ok:
+        return f"{title}\n🕐 {ts}\n\n  ⚠️ Data unavailable"
+    tgvs = [a for a in trains if a.identifier.upper() == "TGV"]
+    if not tgvs:
+        if next_tgv:
+            nxt = _format_next_tgv_line(next_tgv)
+            return f"{title}\n🕐 {ts}\n\n  No TGV in this window\n\n{nxt}"
+        return f"{title}\n🕐 {ts}\n\n  No TGV scheduled"
+    lines = [title, f"🕐 {ts}", f"({len(tgvs)} TGV)", ""]
+    for a in tgvs:
+        lines.append(_format_tgv_board_line(a))
+    if next_tgv and next_tgv not in tgvs:
+        lines.append("")
+        lines.append(_format_next_tgv_line(next_tgv))
+    return "\n".join(lines)
+
+
+def format_taxi_tip(
+    flights: list[Arrival],
+    trains: list[Arrival],
+    flights_ok: bool,
+    trains_ok: bool,
+) -> str:
+    """Smart taxi positioning tip (message 3 of 3).
+
+    Analyses 30-min slots to find peak demand windows for Airport and Gare Centrale.
+    """
+    now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
+    active_fl = [a for a in flights if not a.is_cancelled] if flights_ok else []
+    tgvs = [a for a in trains if a.identifier.upper() == "TGV"] if trains_ok else []
+
+    lines = ["🚖 <b>Taxi Tip</b>", ""]
+
+    # Find best 30-min slots for Airport
+    airport_slots = _best_slots(active_fl, "Airport ✈️")
+    gare_slots = _best_slots(tgvs, "Gare Centrale 🚄")
+
+    if airport_slots:
+        for slot_text in airport_slots:
+            lines.append(f"▸ {slot_text}")
+    if gare_slots:
+        for slot_text in gare_slots:
+            lines.append(f"▸ {slot_text}")
+
+    if not airport_slots and not gare_slots:
+        # No arrivals — give general advice
+        next_fl = _first_future(active_fl, now)
+        next_tgv = _first_future(tgvs, now)
+        if next_fl or next_tgv:
+            lines.append("Quiet period right now")
+            if next_fl:
+                lines.append(f"▸ Airport: first flight at {next_fl.effective_time.strftime('%H:%M')}")
+            if next_tgv:
+                lines.append(f"▸ Gare: next TGV at {next_tgv.effective_time.strftime('%H:%M')}")
+        else:
+            lines.append("No upcoming arrivals — rest or reposition")
+
+    return "\n".join(lines)
+
+
+def _best_slots(arrivals: list[Arrival], location: str) -> list[str]:
+    """Find the top 1-2 busiest 30-min slots and return human-readable tips."""
+    if not arrivals:
+        return []
+    from collections import Counter
+    slots: Counter[str] = Counter()
+    slot_times: dict[str, datetime] = {}
+    for a in arrivals:
+        t = a.effective_time
+        half = "00" if t.minute < 30 else "30"
+        key = f"{t.strftime('%H:')}{ half}"
+        slots[key] += 1
+        if key not in slot_times:
+            slot_times[key] = t
+    tips: list[str] = []
+    for slot, count in slots.most_common(2):
+        if count < 1:
+            break
+        tips.append(f"{location} — {slot} ({count} arrival{'s' if count != 1 else ''})")
+    return tips
+
+
+def _first_future(arrivals: list[Arrival], now: datetime) -> Arrival | None:
+    future = [a for a in arrivals if a.effective_time > now]
+    return min(future, key=lambda a: a.effective_time) if future else None
 
 
 def _both_down(r: Report) -> bool:

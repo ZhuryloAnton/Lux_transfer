@@ -1,10 +1,13 @@
 """Format Report objects into Telegram HTML strings."""
 
 from taxibot.formatters.report import (
+    format_flights_page,
     format_flights_report,
     format_next_train_report,
     format_next_tgv,
     format_now_report,
+    format_taxi_tip,
+    format_tgv_message,
     format_tgv_schedule,
     format_today_report,
     format_tomorrow_report,
@@ -12,10 +15,13 @@ from taxibot.formatters.report import (
 )
 
 __all__ = [
+    "format_flights_page",
     "format_flights_report",
     "format_next_train_report",
     "format_next_tgv",
     "format_now_report",
+    "format_taxi_tip",
+    "format_tgv_message",
     "format_tgv_schedule",
     "format_today_report",
     "format_tomorrow_report",

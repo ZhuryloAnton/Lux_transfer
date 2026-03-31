@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from taxibot.core.config import Settings
 from taxibot.core.http import close_session
@@ -26,6 +26,7 @@ from taxibot.handlers import (
     cmd_today,
     cmd_tomorrow,
     handle_button,
+    handle_page_callback,
 )
 from taxibot.jobs import refresh_realtime_job, refresh_schedule_job, scheduled_report
 from taxibot.services import ReportPipeline
@@ -72,6 +73,9 @@ def create_application(settings: Settings) -> Application:
             handle_button,
         )
     )
+
+    # Pagination: ◀ Prev / Next ▶ inline buttons
+    app.add_handler(CallbackQueryHandler(handle_page_callback))
 
     if settings.report_interval_hours > 0:
         app.job_queue.run_repeating(

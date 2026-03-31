@@ -40,7 +40,8 @@ def build_now_report(
     f = _in_window(flights, now, window_end)
     t = _in_window(trains,  now, window_end)
 
-    next_flight = _first_after(flights, now) if not f and flights_ok else None
+    active_flights = [fl for fl in flights if not fl.is_cancelled]
+    next_flight = _first_after(active_flights, now) if not f and flights_ok else None
     next_train  = _first_after(trains,  now) if not t and trains_ok  else None
 
     return Report(
@@ -136,10 +137,11 @@ def _first_after(arrivals: list[Arrival], after: datetime) -> Arrival | None:
 
 
 def _peaks(arrivals: list[Arrival], location: str) -> list[DemandPeak]:
-    if not arrivals:
+    active = [a for a in arrivals if not a.is_cancelled]
+    if not active:
         return []
     slots: Counter[str] = Counter()
-    for a in arrivals:
+    for a in active:
         half = "00" if a.effective_time.minute < 30 else "30"
         slots[f"{a.effective_time.strftime('%H:')}{ half}"] += 1
     return [
@@ -167,17 +169,19 @@ def _recs_now(
 ) -> list[str]:
     recs: list[str] = []
 
-    if flights:
-        f0 = flights[0].effective_time.strftime("%H:%M")
-        f1 = flights[-1].effective_time.strftime("%H:%M")
-        recs.append(f"{f0}–{f1} → Airport ({len(flights)} flight{'s' if len(flights)!=1 else ''})")
+    active_fl = [a for a in flights if not a.is_cancelled]
+    if active_fl:
+        f0 = active_fl[0].effective_time.strftime("%H:%M")
+        f1 = active_fl[-1].effective_time.strftime("%H:%M")
+        recs.append(f"{f0}–{f1} → Airport ({len(active_fl)} flight{'s' if len(active_fl)!=1 else ''})")
 
-    if trains:
-        t0 = trains[0].effective_time.strftime("%H:%M")
-        t1 = trains[-1].effective_time.strftime("%H:%M")
-        recs.append(f"{t0}–{t1} → Gare Centrale ({len(trains)} train{'s' if len(trains)!=1 else ''})")
+    tgvs = [t for t in trains if t.identifier.upper() == "TGV"]
+    if tgvs:
+        t0 = tgvs[0].effective_time.strftime("%H:%M")
+        t1 = tgvs[-1].effective_time.strftime("%H:%M")
+        recs.append(f"{t0}–{t1} → Gare Centrale ({len(tgvs)} TGV)")
 
-    if not flights and not trains:
+    if not active_fl and not tgvs:
         hints: list[str] = []
         if next_flight:
             hints.append(f"first flight at {next_flight.effective_time.strftime('%H:%M')}")
@@ -199,14 +203,21 @@ def _recs_fullday(
     recs: list[str] = []
 
     if blocks:
-        busiest = max(blocks, key=lambda b: b.count)
-        if busiest.count > 0:
-            recs.append(f"Busiest block: {busiest.label} ({busiest.count} arrivals)")
+        def _relevant_count(b: TimeBlock) -> int:
+            return sum(1 for a in b.arrivals
+                       if (a.transport_type.value == "flight" and not a.is_cancelled)
+                       or (a.transport_type.value == "train" and a.identifier.upper() == "TGV"))
+        busiest = max(blocks, key=_relevant_count)
+        bc = _relevant_count(busiest)
+        if bc > 0:
+            recs.append(f"Busiest block: {busiest.label} ({bc} arrival{'s' if bc != 1 else ''})")
 
-    if flights:
-        recs.append(f"Airport: {len(flights)} flight{'s' if len(flights)!=1 else ''}")
-    if trains:
-        recs.append(f"Gare Centrale: {len(trains)} train{'s' if len(trains)!=1 else ''}")
+    active_fl = [a for a in flights if not a.is_cancelled]
+    if active_fl:
+        recs.append(f"Airport: {len(active_fl)} flight{'s' if len(active_fl)!=1 else ''}")
+    tgvs = [t for t in trains if t.identifier.upper() == "TGV"]
+    if tgvs:
+        recs.append(f"Gare Centrale: {len(tgvs)} TGV")
 
     morning = next((b for b in blocks if b.start_hour == 8),  None)
     evening = next((b for b in blocks if b.start_hour == 17), None)

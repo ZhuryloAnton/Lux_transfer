@@ -28,6 +28,10 @@ class Arrival:
     paris_departure: datetime | None = None  # for TGV from Paris: departure time at Paris
 
     @property
+    def is_cancelled(self) -> bool:
+        return self.status == "CX"
+
+    @property
     def effective_time(self) -> datetime:
         return self.scheduled_time + timedelta(minutes=self.delay_minutes)
 

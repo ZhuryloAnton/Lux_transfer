@@ -37,8 +37,7 @@ _HEADERS = {
 }
 
 # Flights with these status codes are excluded from the active-arrivals list
-_DONE_CODES      = frozenset({"AR", "LD"})       # already landed / arrived
-_CANCELLED_CODES = frozenset({"CX"})              # cancelled
+_DONE_CODES = frozenset({"AR", "LD"})       # already landed / arrived
 
 
 # ── Datetime helper ───────────────────────────────────────────────────────────
@@ -59,6 +58,27 @@ def _to_lux(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         return _LUX_TZ.localize(dt, is_dst=None)
     return dt.astimezone(_LUX_TZ)
+
+
+def _parse_short_time(value: str | None, ref: datetime) -> datetime | None:
+    """Parse a short time string like '23:02' using the date from *ref*.
+
+    The API returns timeEstimated/timeFinal as 'HH:MM' (no date).
+    If the parsed time is more than 6 hours before *ref*, assume next day
+    (handles midnight crossover).
+    """
+    if not value:
+        return None
+    try:
+        parts = value.strip().split(":")
+        h, m = int(parts[0]), int(parts[1])
+    except (ValueError, IndexError):
+        return None
+    dt = ref.replace(hour=h, minute=m, second=0, microsecond=0)
+    # Handle midnight crossover: estimated 01:00 for a flight scheduled at 23:30
+    if dt < ref - timedelta(hours=6):
+        dt += timedelta(days=1)
+    return dt
 
 
 # ── Data source ───────────────────────────────────────────────────────────────
@@ -123,7 +143,7 @@ class FlightDataSource:
                 continue
             if a.effective_time < after:
                 continue
-            if a.status in _DONE_CODES or a.status in _CANCELLED_CODES:
+            if a.status in _DONE_CODES:
                 continue
             arrivals.append(a)
         return sorted(arrivals, key=lambda x: x.effective_time)
@@ -137,9 +157,10 @@ def _parse_entry(entry: dict) -> Arrival | None:
     if sched is None:
         return None
 
-    # Delay = difference between estimated and scheduled time
+    # Delay = difference between estimated and scheduled time.
+    # timeEstimated comes as short "HH:MM" (not full ISO), so parse with date from schDate.
     delay = 0
-    est = _to_lux(entry.get("timeEstimated") or "")
+    est = _parse_short_time(entry.get("timeEstimated") or "", sched)
     if est is not None:
         delay = max(0, int((est - sched).total_seconds() / 60))
 
