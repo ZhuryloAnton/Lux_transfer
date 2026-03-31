@@ -86,6 +86,19 @@ class FlightDataSource:
 
         return self._filter(raw, after=now)
 
+    async def fetch_tomorrow(self) -> list[Arrival]:
+        """Return all arrivals for tomorrow."""
+        now = datetime.now(tz=_LUX_TZ)
+        tomorrow = now + timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+        try:
+            raw = await self._fetch_day(tomorrow_str)
+        except Exception as exc:
+            logger.warning("Airport API: could not fetch tomorrow: %s", exc)
+            return []
+        tomorrow_start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        return self._filter(raw, after=tomorrow_start)
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     async def _fetch_day(self, day_str: str) -> list[dict]:
