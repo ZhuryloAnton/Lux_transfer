@@ -15,7 +15,6 @@ from taxibot.services.analyzer import (
     build_tomorrow_report,
 )
 from taxibot.services.flights import FlightDataSource
-from taxibot.services.trains_gtfs import GTFSTrainSource
 from taxibot.services.trains_realtime import RealtimeDelayCache
 
 try:
@@ -113,19 +112,24 @@ class ReportPipeline:
         hafas_api_key: str = "",
         realtime_refresh_seconds: int = 600,
     ) -> None:
-        self._realtime = RealtimeDelayCache(
-            gtfs_rt_url=gtfs_rt_url,
-            cache_ttl_seconds=realtime_refresh_seconds,
-        )
         self._flights = FlightDataSource()
+        self._uses_opendata = False
         if open_data_api and open_data_api.strip() and OpenDataTrainSource is not None:
             self._trains = OpenDataTrainSource(api_url=open_data_api.strip())
+            self._uses_opendata = True
+            # HAFAS stboard already provides delays — skip GTFS-RT
+            self._realtime = None
         else:
             if open_data_api and open_data_api.strip() and OpenDataTrainSource is None:
                 logger.warning(
                     "OPEN_DATA_API is set but trains_opendata module not found; using GTFS. "
                     "Ensure src/taxibot/services/trains_opendata.py is in the deployment."
                 )
+            self._realtime = RealtimeDelayCache(
+                gtfs_rt_url=gtfs_rt_url,
+                cache_ttl_seconds=realtime_refresh_seconds,
+            )
+            from taxibot.services.trains_gtfs import GTFSTrainSource
             self._trains = GTFSTrainSource(
                 gtfs_url=gtfs_url,
                 get_delay=self._realtime.get_delay_minutes,
@@ -136,11 +140,13 @@ class ReportPipeline:
 
     async def _ensure_realtime_fresh(self) -> None:
         """Load real-time delays if cache is stale (so reports show up-to-date delays)."""
-        await self._realtime.ensure_fresh()
+        if self._realtime is not None:
+            await self._realtime.ensure_fresh()
 
     async def refresh_realtime(self) -> None:
         """Refresh GTFS-RT delay cache. Call every 10 min from job queue."""
-        await self._realtime.refresh()
+        if self._realtime is not None:
+            await self._realtime.refresh()
 
     async def refresh_schedule(self) -> None:
         """Pre-download flights and trains for today and tomorrow; update cache. Run every 10 min."""
