@@ -470,62 +470,80 @@ def format_taxi_tip(
     flights_ok: bool,
     trains_ok: bool,
 ) -> str:
-    """Smart taxi positioning tip (message 3 of 3).
-
-    Analyses 30-min slots to find peak demand windows for Airport and Gare Centrale.
-    """
+    """Smart taxi positioning tip (message 3 of 3)."""
     now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
     active_fl = [a for a in flights if not a.is_cancelled] if flights_ok else []
     tgvs = [a for a in trains if a.identifier.upper() == "TGV"] if trains_ok else []
 
     lines = ["🚖 <b>Taxi Tip</b>", ""]
 
-    # Find best 30-min slots for Airport
-    airport_slots = _best_slots(active_fl, "Airport ✈️")
-    gare_slots = _best_slots(tgvs, "Gare Centrale 🚄")
+    airport_tips = _airport_tips(active_fl)
+    gare_tips = _gare_tips(tgvs)
 
-    if airport_slots:
-        for slot_text in airport_slots:
-            lines.append(f"▸ {slot_text}")
-    if gare_slots:
-        for slot_text in gare_slots:
-            lines.append(f"▸ {slot_text}")
+    if airport_tips:
+        lines.append("✈️ <b>Airport</b>")
+        lines.extend(airport_tips)
+        lines.append("")
 
-    if not airport_slots and not gare_slots:
-        # No arrivals — give general advice
+    if gare_tips:
+        lines.append("🚄 <b>Gare Centrale</b>")
+        lines.extend(gare_tips)
+        lines.append("")
+
+    if not airport_tips and not gare_tips:
         next_fl = _first_future(active_fl, now)
         next_tgv = _first_future(tgvs, now)
         if next_fl or next_tgv:
-            lines.append("Quiet period right now")
+            lines.append("Quiet right now")
             if next_fl:
-                lines.append(f"▸ Airport: first flight at {next_fl.effective_time.strftime('%H:%M')}")
+                lines.append(f"  Next flight: {next_fl.effective_time.strftime('%H:%M')}")
             if next_tgv:
-                lines.append(f"▸ Gare: next TGV at {next_tgv.effective_time.strftime('%H:%M')}")
+                lines.append(f"  Next TGV: {next_tgv.effective_time.strftime('%H:%M')}")
         else:
-            lines.append("No upcoming arrivals — rest or reposition")
+            lines.append("No upcoming arrivals")
 
     return "\n".join(lines)
 
 
-def _best_slots(arrivals: list[Arrival], location: str) -> list[str]:
-    """Find the top 1-2 busiest 30-min slots and return human-readable tips."""
-    if not arrivals:
+# Passengers exit ~15 min after flight lands, ~5 min after TGV arrives
+_FLIGHT_EXIT_MINUTES = 15
+_TGV_EXIT_MINUTES = 5
+
+
+def _airport_tips(flights: list[Arrival]) -> list[str]:
+    """Top 2 busiest 30-min windows with 'be there by' time."""
+    if not flights:
         return []
     from collections import Counter
     slots: Counter[str] = Counter()
-    slot_times: dict[str, datetime] = {}
-    for a in arrivals:
+    slot_first: dict[str, datetime] = {}
+    for a in flights:
         t = a.effective_time
-        half = "00" if t.minute < 30 else "30"
-        key = f"{t.strftime('%H:')}{ half}"
+        half = 0 if t.minute < 30 else 30
+        key = f"{t.hour:02d}:{half:02d}"
         slots[key] += 1
-        if key not in slot_times:
-            slot_times[key] = t
+        if key not in slot_first or t < slot_first[key]:
+            slot_first[key] = t
     tips: list[str] = []
     for slot, count in slots.most_common(2):
         if count < 1:
             break
-        tips.append(f"{location} — {slot} ({count} arrival{'s' if count != 1 else ''})")
+        first = slot_first[slot]
+        be_there = first + timedelta(minutes=_FLIGHT_EXIT_MINUTES)
+        tips.append(f"  Be there by {be_there.strftime('%H:%M')}")
+        tips.append(f"  {count} flight{'s' if count != 1 else ''} landing {slot}")
+    return tips
+
+
+def _gare_tips(tgvs: list[Arrival]) -> list[str]:
+    """Show each upcoming TGV with exit time."""
+    if not tgvs:
+        return []
+    tips: list[str] = []
+    for a in tgvs[:3]:
+        exit_time = a.effective_time + timedelta(minutes=_TGV_EXIT_MINUTES)
+        tips.append(f"  TGV at {a.effective_time.strftime('%H:%M')}")
+        tips.append(f"  Passengers out ~{exit_time.strftime('%H:%M')}")
     return tips
 
 
