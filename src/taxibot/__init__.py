@@ -7,6 +7,7 @@ __version__ = "1.0.0"
 
 def run() -> None:
     """Entry point: load settings, create application, run polling."""
+    import time
     from taxibot.application import create_application
     from taxibot.core.config import get_settings
     import logging
@@ -15,10 +16,21 @@ def run() -> None:
     _setup_logging(settings.log_level)
 
     logger = logging.getLogger("taxibot")
+
+    # Wait for any previous instance to fully stop (Render restarts overlap)
+    logger.info("Waiting 5s for previous instance to stop…")
+    time.sleep(5)
+
     logger.info("Starting TaxiBOT Luxembourg…")
 
     app = create_application(settings)
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+        pool_timeout=10,
+        connect_timeout=10,
+        read_timeout=10,
+    )
 
 
 def _setup_logging(level: str) -> None:
