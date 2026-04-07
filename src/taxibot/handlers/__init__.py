@@ -146,12 +146,36 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _handle_next_tgv(update, context)
 
 
+async def _get_flights_for_page(pipeline, cache_key: str, use_tomorrow: bool = False) -> tuple[list, bool]:
+    """Get flights from cache; if cache is empty, fetch directly from the API as fallback."""
+    flights, ok = pipeline._schedule_cache.get(cache_key, ([], False))
+    if flights and ok:
+        return flights, ok
+
+    # Cache miss — fetch directly
+    logger.info("Page callback: cache miss for %s, fetching live", cache_key)
+    try:
+        if use_tomorrow:
+            flights = await asyncio.wait_for(pipeline._flights.fetch_tomorrow(), timeout=10)
+        else:
+            flights = await asyncio.wait_for(pipeline._flights.fetch_today(), timeout=10)
+        return flights, True
+    except Exception:
+        logger.warning("Page callback: live fetch failed for %s", cache_key, exc_info=True)
+        return [], False
+
+
 async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle ◀ Prev / Next ▶ inline button presses for pagination."""
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        logger.warning("query.answer() failed", exc_info=True)
 
     data = query.data or ""
+    logger.info("Pagination callback: %s", data)
+
     # Format: "prefix:page_num"
     parts = data.rsplit(":", 1)
     if len(parts) != 2:
@@ -164,45 +188,45 @@ async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
+        logger.warning("Pagination callback: pipeline is None")
         return
 
-    if prefix == "fl_now":
-        flights_data = pipeline._schedule_cache.get("flights_today", ([], False))
-        all_flights, ok = flights_data
-        # Filter to 3-hour window
-        now = datetime.now(tz=_LUX_TZ)
-        window_end = now + timedelta(hours=3)
-        flights_3h = [a for a in all_flights if now <= a.effective_time <= window_end]
-        text, total_pages = format_flights_page(
-            flights_3h, ok, page=page,
-            header_title="✈️ <b>Flights — Next 3 Hours</b>",
-        )
-    elif prefix == "fl_today":
-        flights = pipeline._schedule_cache.get("flights_today", ([], False))
-        text, total_pages = format_flights_page(
-            flights[0], flights[1], page=page,
-            header_title="✈️ <b>Flights — Today</b>",
-        )
-    elif prefix == "fl_tomorrow":
-        flights = pipeline._schedule_cache.get("flights_tomorrow", ([], False))
-        text, total_pages = format_flights_page(
-            flights[0], flights[1], page=page,
-            header_title="✈️ <b>Flights — Tomorrow</b>",
-        )
-    elif prefix == "fl_list":
-        flights = pipeline._schedule_cache.get("flights_today", ([], False))
-        text, total_pages = format_flights_page(
-            flights[0], flights[1], page=page,
-            header_title="✈️ <b>Flights — Luxembourg-Findel</b>",
-        )
-    else:
-        return
-
-    kb = _page_keyboard(page, total_pages, prefix)
     try:
+        if prefix == "fl_now":
+            all_flights, ok = await _get_flights_for_page(pipeline, "flights_today")
+            now = datetime.now(tz=_LUX_TZ)
+            window_end = now + timedelta(hours=3)
+            flights_3h = [a for a in all_flights if now <= a.effective_time <= window_end]
+            text, total_pages = format_flights_page(
+                flights_3h, ok, page=page,
+                header_title="✈️ <b>Flights — Next 3 Hours</b>",
+            )
+        elif prefix == "fl_today":
+            all_flights, ok = await _get_flights_for_page(pipeline, "flights_today")
+            text, total_pages = format_flights_page(
+                all_flights, ok, page=page,
+                header_title="✈️ <b>Flights — Today</b>",
+            )
+        elif prefix == "fl_tomorrow":
+            all_flights, ok = await _get_flights_for_page(pipeline, "flights_tomorrow", use_tomorrow=True)
+            text, total_pages = format_flights_page(
+                all_flights, ok, page=page,
+                header_title="✈️ <b>Flights — Tomorrow</b>",
+            )
+        elif prefix == "fl_list":
+            all_flights, ok = await _get_flights_for_page(pipeline, "flights_today")
+            text, total_pages = format_flights_page(
+                all_flights, ok, page=page,
+                header_title="✈️ <b>Flights — Luxembourg-Findel</b>",
+            )
+        else:
+            return
+
+        kb = _page_keyboard(page, total_pages, prefix)
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+        logger.info("Pagination: edited to page %d/%d (%s)", page + 1, total_pages, prefix)
     except Exception:
-        logger.debug("Could not edit paginated message", exc_info=True)
+        logger.exception("Pagination callback failed (page=%d, prefix=%s)", page, prefix)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
