@@ -38,6 +38,7 @@ import csv
 import io
 import logging
 import zipfile
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -97,13 +98,34 @@ def _gtfs_time_to_delta(value: str) -> timedelta | None:
     return timedelta(hours=h, minutes=m, seconds=s)
 
 
-def _read_csv(z: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
+def _stream_csv(z: zipfile.ZipFile, name: str) -> Iterator[tuple[list[str], dict[str, int]]]:
+    """Stream a CSV member as ``(row, column_index)`` without materialising it.
+
+    Deliberately not ``DictReader`` into a list: ``calendar_dates.txt`` is ~271k
+    rows and ``stop_times.txt`` ~420k, and building a dict per row pushed peak
+    RSS to ~410 MB — absurd for a process whose whole retained index is under a
+    megabyte, and enough to get OOM-killed in a small container.
+    """
     try:
-        raw = z.read(name)
+        handle = z.open(name)
     except KeyError:
         logger.warning("SNCF GTFS: %s missing from archive", name)
-        return []
-    return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+        return
+    with handle:
+        reader = csv.reader(io.TextIOWrapper(handle, encoding="utf-8-sig"))
+        header = next(reader, None)
+        if header is None:
+            return
+        index = {h.strip(): i for i, h in enumerate(header)}
+        for row in reader:
+            yield row, index
+
+
+def _cell(row: list[str], index: dict[str, int], column: str) -> str:
+    i = index.get(column)
+    if i is None or i >= len(row):
+        return ""
+    return row[i]
 
 
 def _parse_gtfs(raw: bytes) -> dict[str, Any]:
@@ -113,56 +135,71 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
     over ~420k ``stop_times`` rows, so it must never touch the event loop.
     """
     with zipfile.ZipFile(io.BytesIO(raw), "r") as z:
-        stops = _read_csv(z, "stops.txt")
-        trips = _read_csv(z, "trips.txt")
-        calendar_dates = _read_csv(z, "calendar_dates.txt")
-
         # The TGV stop point at Luxembourg, found by pattern rather than a
         # hardcoded id so a re-issued id does not silently empty the feature.
         tgv_stop_id = ""
         stop_names: dict[str, str] = {}
-        for s in stops:
-            sid = s.get("stop_id") or ""
-            stop_names[sid] = (s.get("stop_name") or "").strip()
+        for row, idx in _stream_csv(z, "stops.txt"):
+            sid = _cell(row, idx, "stop_id")
+            if not sid:
+                continue
+            stop_names[sid] = _cell(row, idx, "stop_name").strip()
             if _LUX_STATION_CODE in sid and "TGV" in sid.upper():
                 tgv_stop_id = sid
         if not tgv_stop_id:
             logger.warning("SNCF GTFS: no TGV stop point found for Luxembourg (%s)", _LUX_STATION_CODE)
             return {}
 
-        trip_service = {t["trip_id"]: t.get("service_id", "") for t in trips if t.get("trip_id")}
+        # Pass 1 over stop_times: which trips call at Luxembourg, and when.
+        # Narrowing to these ~200 trips first is what keeps every later structure
+        # small — collecting first/last for all ~48k trips was the memory hog.
+        lux_arrival: dict[str, str] = {}
+        for row, idx in _stream_csv(z, "stop_times.txt"):
+            if _cell(row, idx, "stop_id") == tgv_stop_id:
+                tid = _cell(row, idx, "trip_id")
+                if tid:
+                    lux_arrival[tid] = _cell(row, idx, "arrival_time")
 
-        service_dates: dict[str, set[str]] = {}
-        for cd in calendar_dates:
-            # This feed uses calendar_dates exclusively (there is no calendar.txt),
-            # listing every operating day as exception_type=1.
-            if cd.get("exception_type") != "1":
-                continue
-            service_dates.setdefault(cd.get("service_id", ""), set()).add(cd.get("date", ""))
+        if not lux_arrival:
+            logger.warning("SNCF GTFS: no trips call at %s", tgv_stop_id)
+            return {}
 
-        # One streaming pass: per trip keep the first stop, the last stop, and the
-        # arrival time at Luxembourg. Reading stop_times.txt into a list first
-        # would cost far more memory than these three small dicts.
+        # Pass 2: first and last stop, for those trips only. Re-reading the file
+        # costs CPU in a worker thread; holding 48k tuples cost hundreds of MB.
         first: dict[str, tuple[int, str, str]] = {}
         last: dict[str, tuple[int, str]] = {}
-        lux_arrival: dict[str, str] = {}
-        with z.open("stop_times.txt") as fh:
-            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
-            for row in reader:
-                tid = row.get("trip_id") or ""
-                if not tid:
-                    continue
-                try:
-                    seq = int(row.get("stop_sequence") or 0)
-                except ValueError:
-                    continue
-                sid = row.get("stop_id") or ""
-                if tid not in first or seq < first[tid][0]:
-                    first[tid] = (seq, sid, row.get("departure_time", ""))
-                if tid not in last or seq > last[tid][0]:
-                    last[tid] = (seq, sid)
-                if sid == tgv_stop_id:
-                    lux_arrival[tid] = row.get("arrival_time", "")
+        for row, idx in _stream_csv(z, "stop_times.txt"):
+            tid = _cell(row, idx, "trip_id")
+            if tid not in lux_arrival:
+                continue
+            try:
+                seq = int(_cell(row, idx, "stop_sequence") or 0)
+            except ValueError:
+                continue
+            sid = _cell(row, idx, "stop_id")
+            if tid not in first or seq < first[tid][0]:
+                first[tid] = (seq, sid, _cell(row, idx, "departure_time"))
+            if tid not in last or seq > last[tid][0]:
+                last[tid] = (seq, sid)
+
+        # Only the services behind those trips matter.
+        trip_service: dict[str, str] = {}
+        for row, idx in _stream_csv(z, "trips.txt"):
+            tid = _cell(row, idx, "trip_id")
+            if tid in lux_arrival:
+                trip_service[tid] = _cell(row, idx, "service_id")
+        wanted_services = set(trip_service.values())
+
+        # This feed uses calendar_dates exclusively (there is no calendar.txt),
+        # listing every operating day as exception_type=1. Filtering to the ~135
+        # relevant services turns 271k rows into a few thousand kept dates.
+        service_dates: dict[str, set[str]] = {}
+        for row, idx in _stream_csv(z, "calendar_dates.txt"):
+            if _cell(row, idx, "exception_type") != "1":
+                continue
+            sid = _cell(row, idx, "service_id")
+            if sid in wanted_services:
+                service_dates.setdefault(sid, set()).add(_cell(row, idx, "date"))
 
     # Keep only trips that TERMINATE at the Luxembourg TGV stop point.
     index: dict[str, list[tuple[str, str, str, str]]] = {}
