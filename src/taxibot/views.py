@@ -31,6 +31,7 @@ from taxibot.formatters.report import (
     format_tgv_message,
 )
 from taxibot.models import Arrival
+from taxibot.services.pipeline import _next_tgv_from_lists
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,31 @@ def _cached(pipeline, key: str) -> tuple[list[Arrival], bool]:
     return pipeline._schedule_cache.get(key, ([], False))
 
 
+def _rollover(
+    today: list[Arrival],
+    tomorrow: list[Arrival],
+    now: datetime,
+) -> tuple[list[Arrival], bool]:
+    """Today's remaining arrivals, or tomorrow's once today is exhausted.
+
+    By late evening there is nothing left today, and an empty board tells a driver
+    nothing. Rolling into tomorrow keeps every view answering "what is next"
+    rather than "nothing".
+
+    Returns ``(arrivals, rolled_over)``. The flag is not decoration: board lines
+    render only ``HH:MM``, so an unlabelled ``06:00`` shown at 23:00 reads as
+    today. Callers use it to say "tomorrow" in the header.
+    """
+    remaining = _upcoming(today, now)
+    if remaining:
+        return remaining, False
+    return _upcoming(tomorrow, now), True
+
+
+def _suffix(rolled: bool) -> str:
+    return " (tomorrow)" if rolled else ""
+
+
 # ── Views ─────────────────────────────────────────────────────────────────────
 
 async def build_soon_messages(pipeline) -> list[OutboundMessage]:
@@ -117,30 +143,36 @@ async def build_soon_messages(pipeline) -> list[OutboundMessage]:
 
     flights, fl_ok = _cached(pipeline, "flights_today")
     trains, tr_ok = _cached(pipeline, "trains_today")
+    flights_tomorrow, fl_tom_ok = _cached(pipeline, "flights_tomorrow")
+    trains_tomorrow, tr_tom_ok = _cached(pipeline, "trains_tomorrow")
 
-    upcoming_flights = _upcoming(flights, now)[:SOON_FLIGHT_COUNT]
-    upcoming_trains = _upcoming(trains, now)
-
-    # Roll over to tomorrow's early flights when today is exhausted, so a late
-    # evening push is not just an empty list.
-    if not upcoming_flights:
-        tomorrow_flights, tomorrow_ok = _cached(pipeline, "flights_tomorrow")
-        if tomorrow_ok and tomorrow_flights:
-            upcoming_flights = _upcoming(tomorrow_flights, now)[:SOON_FLIGHT_COUNT]
-            fl_ok = True
+    # Both roll into tomorrow once today runs dry — by 23:00 "nothing" is not a
+    # useful answer for someone deciding where to park.
+    upcoming_flights, flights_rolled = _rollover(flights, flights_tomorrow, now)
+    upcoming_flights = upcoming_flights[:SOON_FLIGHT_COUNT]
+    upcoming_trains, trains_rolled = _rollover(trains, trains_tomorrow, now)
+    fl_ok = fl_ok or fl_tom_ok
+    tr_ok = tr_ok or tr_tom_ok
 
     flights_text, _ = format_flights_page(
         upcoming_flights,
         fl_ok,
         page=0,
-        header_title=f"✈️ <b>Arriving soon — next {SOON_FLIGHT_COUNT} flights</b>",
+        header_title=(
+            f"✈️ <b>Arriving soon — next {SOON_FLIGHT_COUNT} flights"
+            f"{_suffix(flights_rolled)}</b>"
+        ),
     )
 
+    # next_tgv is the explicit "nothing today, here is the next one" line. Without
+    # it the TGV block just says "no TGV" and the driver cannot tell whether that
+    # means later tonight, tomorrow morning, or a suspended service.
+    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow)
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,
-        next_tgv=None,
-        title="🚄 <b>TGV arriving soon</b>",
+        next_tgv=next_tgv,
+        title=f"🚄 <b>TGV arriving soon{_suffix(trains_rolled)}</b>",
     )
 
     tip_text = format_taxi_tip(upcoming_flights, upcoming_trains, fl_ok, tr_ok)
@@ -159,6 +191,7 @@ async def build_today_messages(pipeline) -> list[OutboundMessage]:
 
     flights, fl_ok = _cached(pipeline, "flights_today")
     trains, tr_ok = _cached(pipeline, "trains_today")
+    trains_tomorrow, _ = _cached(pipeline, "trains_tomorrow")
 
     upcoming_flights = _upcoming(flights, now)
     upcoming_trains = _upcoming(trains, now)
@@ -171,10 +204,14 @@ async def build_today_messages(pipeline) -> list[OutboundMessage]:
     )
     keyboard = page_keyboard(0, total_pages, "fl_today")
 
+    # "Today" deliberately does not roll its lists into tomorrow — it means today.
+    # But the next-TGV line may point at tomorrow, so an empty evening board still
+    # tells you when the next one is.
+    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow)
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,
-        next_tgv=None,
+        next_tgv=next_tgv,
         title="🚄 <b>TGV today</b>",
     )
 

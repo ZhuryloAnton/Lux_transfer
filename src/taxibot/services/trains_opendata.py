@@ -11,6 +11,7 @@ No API key required for stboard.exe.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
@@ -127,8 +128,28 @@ def _parse_journey(attrs: str, base_date: datetime) -> Arrival | None:
     )
 
 
-async def _fetch_stboard(max_journeys: int = 80) -> list[Arrival]:
-    """Fetch arrivals at Gare Centrale via stboard.exe XML endpoint."""
+# stboard caps a single reply at ~214 journeys regardless of maxJourneys, and one
+# window starting at 00:00 therefore stops around 21:00. Two windows cover a full
+# day; the second also spills into the following day, so results are always
+# filtered by the date we asked for.
+_STBOARD_MAX_JOURNEYS = 300
+_DAY_WINDOWS = ("00:00", "20:00")
+
+
+async def _fetch_stboard(
+    max_journeys: int = 80,
+    *,
+    date: str | None = None,
+    time: str | None = None,
+) -> list[Arrival]:
+    """Fetch arrivals at Gare Centrale via the stboard.exe XML endpoint.
+
+    Without *date* this is the live rolling board from "now". With *date*
+    (``DD.MM.YY``) and *time* (``HH:MM``) stboard returns that specific window,
+    which is the only way to see beyond the rolling board — a plain request can
+    never reach tomorrow. Real-time delays are present either way; only future
+    dates report ``delay="-"``, which :func:`_parse_journey` already treats as 0.
+    """
     params = {
         "boardType": "arr",
         "input": _GARE_CENTRALE_ID,
@@ -136,6 +157,10 @@ async def _fetch_stboard(max_journeys: int = 80) -> list[Arrival]:
         "start": "yes",
         "L": "vs_java3",
     }
+    if date:
+        params["date"] = date
+    if time:
+        params["time"] = time
     try:
         body = await fetch_text(_STBOARD_URL, params=params, ssl=False)
     except Exception as e:
@@ -153,7 +178,52 @@ async def _fetch_stboard(max_journeys: int = 80) -> list[Arrival]:
 
     arrivals.sort(key=lambda x: x.effective_time)
     delayed = sum(1 for a in arrivals if a.delay_minutes > 0)
-    logger.info("stboard.exe: %d arrivals (%d delayed)", len(arrivals), delayed)
+    logger.info(
+        "stboard.exe%s: %d arrivals (%d delayed)",
+        f" {date} {time}" if date else "",
+        len(arrivals), delayed,
+    )
+    return arrivals
+
+
+def _arrival_key(a: Arrival) -> tuple[str, str, str]:
+    """Identity of one arrival, for de-duplicating overlapping windows."""
+    return (a.identifier, a.scheduled_time.isoformat(), a.origin)
+
+
+async def _fetch_stboard_day(day: datetime) -> list[Arrival]:
+    """Every arrival on *day*, by stitching the two windows together.
+
+    Requesting one board and filtering it — what this used to do for tomorrow —
+    cannot work: the rolling board only reaches ~12h ahead, so tomorrow was
+    always empty except late in the evening. That made ``/tomorrow`` silently
+    correct at 23:00 and silently empty at 09:00, which is worse than failing
+    outright.
+    """
+    date_str = day.strftime("%d.%m.%y")
+    target = day.date()
+
+    results = await asyncio.gather(
+        *(
+            _fetch_stboard(_STBOARD_MAX_JOURNEYS, date=date_str, time=window)
+            for window in _DAY_WINDOWS
+        ),
+        return_exceptions=True,
+    )
+
+    merged: dict[tuple[str, str, str], Arrival] = {}
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning("stboard.exe window failed for %s: %s", date_str, result)
+            continue
+        for a in result:
+            # The 20:00 window runs into the next day — keep only the day asked for.
+            if a.scheduled_time.date() != target:
+                continue
+            merged.setdefault(_arrival_key(a), a)
+
+    arrivals = sorted(merged.values(), key=lambda a: a.effective_time)
+    logger.info("stboard.exe %s: %d arrivals for the full day", date_str, len(arrivals))
     return arrivals
 
 
@@ -168,17 +238,19 @@ class OpenDataTrainSource:
         self._api_url = api_url
 
     async def fetch_today(self) -> list[Arrival]:
-        """Trains arriving today (effective_time >= now)."""
-        arrivals = await _fetch_stboard(max_journeys=80)
+        """Trains still to arrive today.
+
+        Uses the full-day fetch rather than the rolling board: with the old
+        ``max_journeys=80`` the reply stopped around midday, so "Today schedule"
+        was missing every evening arrival when asked in the morning.
+        """
         now = datetime.now(tz=_LUX_TZ)
-        today = now.date()
-        return [a for a in arrivals if a.effective_time >= now and a.effective_time.date() == today]
+        arrivals = await _fetch_stboard_day(now)
+        return [a for a in arrivals if a.effective_time >= now]
 
     async def fetch_tomorrow(self) -> list[Arrival]:
-        """Trains for tomorrow — stboard only shows near-future, so may be empty."""
-        arrivals = await _fetch_stboard(max_journeys=100)
-        tomorrow = (datetime.now(tz=_LUX_TZ) + timedelta(days=1)).date()
-        return [a for a in arrivals if a.effective_time.date() == tomorrow]
+        """Every train arriving tomorrow."""
+        return await _fetch_stboard_day(datetime.now(tz=_LUX_TZ) + timedelta(days=1))
 
     async def get_next_train(self) -> Arrival | None:
         """Next train (any type)."""

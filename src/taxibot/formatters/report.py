@@ -302,8 +302,8 @@ def format_next_tgv(tgv: Arrival | None) -> str:
     if tgv is None:
         return (
             "🚄 <b>Next TGV → Luxembourg</b>\n\n"
-            "No TGV found. This can mean none left today, or that TGV service is "
-            "suspended (Paris–Luxembourg is paused until 24 Aug 2026)."
+            "No TGV found — either none remain in the timetable we hold, or TGV "
+            "service is currently suspended."
         )
     return "\n\n" + _format_next_tgv_line(tgv)
 
