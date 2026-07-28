@@ -2,3 +2,6 @@ python-telegram-bot[job-queue]==21.6
 aiohttp==3.10.11
 pytz==2024.2
 cachetools==5.5.0
+# Required by services/trains_realtime.py (google.transit.gtfs_realtime_pb2).
+# Was missing, so a clean install produced a bot with no train delays at all.
+gtfs-realtime-bindings==1.0.0

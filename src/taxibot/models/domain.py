@@ -25,11 +25,26 @@ class Arrival:
     origin: str                    # city / airport the service comes from
     status: str = "scheduled"
     delay_minutes: int = 0
-    paris_departure: datetime | None = None  # for TGV from Paris: departure time at Paris
+    # Departure time at the service's ORIGIN, not necessarily Paris — SNCF TGVs
+    # terminating at Luxembourg also start from Marseille and Montpellier. The
+    # field name is historical; read it together with `origin`.
+    paris_departure: datetime | None = None
 
     @property
     def is_cancelled(self) -> bool:
         return self.status == "CX"
+
+    @property
+    def is_tgv(self) -> bool:
+        """True for any TGV service.
+
+        Substring match, not equality: feeds return "TGV", but also "TGV 9573"
+        and "TGV INOUI" depending on the source. This used to be tested two
+        different ways — `== "TGV"` in the formatters and `"TGV" in ...` in the
+        pipeline — so a feed using long names showed TGVs in /tgv and nothing
+        anywhere else. One definition, one behaviour.
+        """
+        return "TGV" in (self.identifier or "").upper()
 
     @property
     def effective_time(self) -> datetime:

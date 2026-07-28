@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from taxibot.core.config import Settings
 from taxibot.core.http import close_session
 from taxibot.handlers import (
-    BTN_FLIGHTS,
-    BTN_NEXT_TGV,
-    BTN_NOW,
-    BTN_TGV_TODAY,
+    BTN_SOON,
     BTN_TODAY,
-    BTN_TOMORROW,
     cmd_flights,
     cmd_help,
     cmd_next_tgv,
@@ -52,6 +49,8 @@ def create_application(settings: Settings) -> Application:
         gtfs_rt_url=settings.gtfs_rt_url,
         hafas_api_key=settings.hafas_api_key,
         realtime_refresh_seconds=settings.realtime_refresh_seconds,
+        sncf_gtfs_url=settings.sncf_gtfs_url,
+        sncf_gtfs_rt_url=settings.sncf_gtfs_rt_url,
     )
     app.bot_data["chat_id"] = settings.telegram_chat_id
 
@@ -66,7 +65,9 @@ def create_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("tgv", cmd_tgv))
     app.add_handler(CommandHandler("status", cmd_status))
 
-    btn_pattern = f"^({BTN_NOW}|{BTN_TODAY}|{BTN_TOMORROW}|{BTN_FLIGHTS}|{BTN_NEXT_TGV}|{BTN_TGV_TODAY})$"
+    # re.escape: button labels are user-facing text, not regex. Without it a
+    # label containing '.' or '(' would silently match the wrong things.
+    btn_pattern = "^(" + "|".join(re.escape(b) for b in (BTN_SOON, BTN_TODAY)) + ")$"
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex(btn_pattern),

@@ -16,6 +16,7 @@ from taxibot.services.analyzer import (
 )
 from taxibot.services.flights import FlightDataSource
 from taxibot.services.trains_realtime import RealtimeDelayCache
+from taxibot.services.trains_sncf import SNCFTrainSource
 
 try:
     from taxibot.services.trains_opendata import OpenDataTrainSource
@@ -61,6 +62,21 @@ def _next_tgv_from_lists(today: list[Arrival], tomorrow: list[Arrival]) -> Arriv
         if tgvs:
             return min(tgvs, key=lambda a: a.effective_time)
     return None
+
+
+def _merge_trains(regional: list[Arrival], tgv: list[Arrival]) -> list[Arrival]:
+    """Combine the regional board with SNCF's TGV arrivals into one list.
+
+    Any TGV already present in the regional feed is dropped in favour of SNCF's,
+    which is authoritative: it carries the true origin departure time instead of
+    an estimate, and real-time delays. In practice stboard returns no TGV at all,
+    so this filter is a guard rather than a routine operation — but the GTFS
+    source can return TGVs, and two entries for one train would be worse than
+    none.
+    """
+    merged = [a for a in regional if not a.is_tgv] + list(tgv)
+    merged.sort(key=lambda a: a.effective_time)
+    return merged
 
 
 def _flight_key(a: Arrival) -> tuple[str, str, str]:
@@ -111,6 +127,8 @@ class ReportPipeline:
         gtfs_rt_url: str = "",
         hafas_api_key: str = "",
         realtime_refresh_seconds: int = 600,
+        sncf_gtfs_url: str = "",
+        sncf_gtfs_rt_url: str = "",
     ) -> None:
         self._flights = FlightDataSource()
         self._uses_opendata = False
@@ -135,6 +153,14 @@ class ReportPipeline:
                 get_delay=self._realtime.get_delay_minutes,
                 hafas_api_key=hafas_api_key,
             )
+        # TGV comes from SNCF, always — neither stboard nor the Luxembourg GTFS
+        # carries it. Keyless, so there is nothing to configure and no reason to
+        # make it optional.
+        self._tgv = SNCFTrainSource(
+            gtfs_url=sncf_gtfs_url,
+            gtfs_rt_url=sncf_gtfs_rt_url,
+        )
+
         self._schedule_cache: dict[str, tuple[list[Arrival], bool]] = {}
         self._schedule_lock = asyncio.Lock()
 
@@ -159,12 +185,23 @@ class ReportPipeline:
                 self._trains.fetch_today(),
                 self._flights.fetch_tomorrow(),
                 self._trains.fetch_tomorrow(),
+                self._tgv.fetch_today(),
+                self._tgv.fetch_tomorrow(),
                 return_exceptions=True,
             )
             new_flights_today, flights_today_ok = _unpack(results[0], "flights/today")
-            new_trains_today, trains_today_ok = _unpack(results[1], "trains/today")
+            regional_today, trains_today_ok = _unpack(results[1], "trains/today")
             new_flights_tomorrow, flights_tomorrow_ok = _unpack(results[2], "flights/tomorrow")
-            new_trains_tomorrow, trains_tomorrow_ok = _unpack(results[3], "trains/tomorrow")
+            regional_tomorrow, trains_tomorrow_ok = _unpack(results[3], "trains/tomorrow")
+            tgv_today, tgv_today_ok = _unpack(results[4], "tgv/today")
+            tgv_tomorrow, tgv_tomorrow_ok = _unpack(results[5], "tgv/tomorrow")
+
+            new_trains_today = _merge_trains(regional_today, tgv_today)
+            new_trains_tomorrow = _merge_trains(regional_tomorrow, tgv_tomorrow)
+            # Trains count as available if either source answered — a TGV outage
+            # must not blank out the regional board, or vice versa.
+            trains_today_ok = trains_today_ok or tgv_today_ok
+            trains_tomorrow_ok = trains_tomorrow_ok or tgv_tomorrow_ok
             if flights_today_ok:
                 _detect_flight_moves(old_flights_today, new_flights_today, "today")
             if flights_tomorrow_ok:

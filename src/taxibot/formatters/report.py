@@ -11,7 +11,7 @@ from taxibot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 
 _NO_DATA = "⚠️ Data temporarily unavailable."
 _SEP = "─────────────────────────"
-_FLIGHTS_PER_PAGE = 5
+_FLIGHTS_PER_PAGE = 20
 
 
 def format_now_report(r: Report) -> str:
@@ -242,10 +242,14 @@ def _format_tgv_line(tgv: Arrival) -> str:
     month_name = tgv.effective_time.strftime("%B")
     year = tgv.effective_time.year
     date_str = f"{day_num} {month_name} {year}"
+    # Label with the real origin. SNCF TGVs terminating at Luxembourg also come
+    # from Marseille and Montpellier, so hardcoding "Paris" printed the wrong
+    # city for those services.
+    origin = escape(tgv.origin or "—")
     if tgv.paris_departure:
-        paris_time = tgv.paris_departure.strftime("%H:%M")
-        return f"{date_str}\nParis {paris_time} → Luxembourg {lux_time}"
-    return f"{date_str}\n{lux_time} Paris → Luxembourg"
+        origin_time = tgv.paris_departure.strftime("%H:%M")
+        return f"{date_str}\n{origin} {origin_time} → Luxembourg {lux_time}"
+    return f"{date_str}\n{lux_time} {origin} → Luxembourg"
 
 
 def _format_next_tgv_line(tgv: Arrival) -> str:
@@ -263,8 +267,8 @@ def _format_tgv_board_line(a: Arrival) -> str:
     gare_time = a.effective_time.strftime("%H:%M")
 
     if a.paris_departure:
-        paris_time = a.paris_departure.strftime("%H:%M")
-        route = f"  Paris ({paris_time}) → Luxembourg ({gare_time})"
+        origin_time = a.paris_departure.strftime("%H:%M")
+        route = f"  {escape(a.origin)} ({origin_time}) → Luxembourg ({gare_time})"
     else:
         route = f"  {escape(a.origin)} → Luxembourg ({gare_time})"
 
@@ -279,7 +283,7 @@ def format_tgv_schedule(tgvs: list[Arrival], day_label: str = "today") -> str:
     now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
     ts = now.strftime("%A %d %b %Y, %H:%M")
     header = "🚄 <b>TGV today</b>"
-    sub = "<b>Paris → Luxembourg (Gare Centrale)</b>"
+    sub = "<b>Long-distance arrivals (Gare Centrale)</b>"
     if not tgvs:
         return f"{header}\n{sub}\n🕐 {ts}\n\n  No TGV in schedule today."
     lines = [
@@ -297,8 +301,9 @@ def format_tgv_schedule(tgvs: list[Arrival], day_label: str = "today") -> str:
 def format_next_tgv(tgv: Arrival | None) -> str:
     if tgv is None:
         return (
-            "🚄 <b>Next TGV Paris → Luxembourg</b>\n\n"
-            "No TGV found. This can mean no TGVs left today, or train data could not be loaded."
+            "🚄 <b>Next TGV → Luxembourg</b>\n\n"
+            "No TGV found. This can mean none left today, or that TGV service is "
+            "suspended (Paris–Luxembourg is paused until 24 Aug 2026)."
         )
     return "\n\n" + _format_next_tgv_line(tgv)
 
@@ -348,7 +353,7 @@ def _section_trains_now(
     header = "🚄 <b>TGV (Gare Centrale)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
-    tgvs = [a for a in arrivals if a.identifier.upper() == "TGV"]
+    tgvs = [a for a in arrivals if a.is_tgv]
     if not tgvs:
         return f"{header}\n  No TGV in the next 3h\n"
     lines = [f"{header}", ""]
@@ -382,7 +387,7 @@ def _section_detailed_list(
 
 
 def _section_trains_tgv_only(arrivals: list[Arrival], header: str) -> str:
-    tgvs = [a for a in arrivals if a.identifier.upper() == "TGV"]
+    tgvs = [a for a in arrivals if a.is_tgv]
     header = "🚄 <b>TGV (Gare Centrale)</b>"
     if not tgvs:
         return f"{header}\n  No TGV scheduled\n"
@@ -401,7 +406,7 @@ def _section_trains_by_block(
     header = "🚄 <b>TGV (Gare Centrale)</b>"
     if status == SourceStatus.UNAVAILABLE:
         return f"{header}\n  ⚠️ Data unavailable\n"
-    tgvs = [a for a in trains if a.identifier.upper() == "TGV"]
+    tgvs = [a for a in trains if a.is_tgv]
     if not tgvs:
         return f"{header}\n  No TGV scheduled\n"
     lines = [f"{header} ({len(tgvs)})", ""]
@@ -415,7 +420,7 @@ def _section_time_blocks(blocks: list[TimeBlock]) -> str:
     lines = ["📊 <b>By Period</b>"]
     for b in blocks:
         fl = sum(1 for a in b.arrivals if a.transport_type.value == "flight" and not a.is_cancelled)
-        tgv = sum(1 for a in b.arrivals if a.transport_type.value == "train" and a.identifier.upper() == "TGV")
+        tgv = sum(1 for a in b.arrivals if a.transport_type.value == "train" and a.is_tgv)
         total = fl + tgv
         if total == 0:
             lines.append(f"  ▫ {b.label}: quiet")
@@ -449,7 +454,7 @@ def format_tgv_message(
     ts = now.strftime("%H:%M")
     if not trains_ok:
         return f"{title}\n🕐 {ts}\n\n  ⚠️ Data unavailable"
-    tgvs = [a for a in trains if a.identifier.upper() == "TGV"]
+    tgvs = [a for a in trains if a.is_tgv]
     if not tgvs:
         if next_tgv:
             nxt = _format_next_tgv_line(next_tgv)
@@ -473,7 +478,7 @@ def format_taxi_tip(
     """Smart taxi positioning tip (message 3 of 3)."""
     now = datetime.now(tz=pytz.timezone("Europe/Luxembourg"))
     active_fl = [a for a in flights if not a.is_cancelled] if flights_ok else []
-    tgvs = [a for a in trains if a.identifier.upper() == "TGV"] if trains_ok else []
+    tgvs = [a for a in trains if a.is_tgv] if trains_ok else []
 
     lines = ["🚖 <b>Taxi Tip</b>", ""]
 
