@@ -442,11 +442,42 @@ def _section_recs(recs: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _replacement_block(coaches: list[Arrival]) -> list[str]:
+    """Replacement-coach lines, shown under the TGV board.
+
+    While the Thionville–Luxembourg line is closed, Paris passengers still arrive —
+    by reservation-only coach connecting off the TGV at Metz. For a driver the
+    question is "when do Paris passengers land", so an empty TGV board plus nothing
+    else is actively misleading.
+    """
+    if not coaches:
+        return []
+    lines = ["", f"🚌 <b>TGV replacement coach</b> ({len(coaches)})"]
+    for a in coaches:
+        arrive = a.effective_time.strftime("%H:%M")
+        origin = escape(a.origin)
+        if a.paris_departure:
+            lines.append(f"  {origin} {a.paris_departure.strftime('%H:%M')} → Luxembourg ({arrive})")
+        else:
+            lines.append(f"  {origin} → Luxembourg ({arrive})")
+        lines.append(f"  {_delay_or_status(a)}")
+    return lines
+
+
+def _delay_or_status(a: Arrival) -> str:
+    if a.is_cancelled:
+        return "❌ Cancelled"
+    if a.delay_minutes >= 5:
+        return f"{a.scheduled_time.strftime('%H:%M')} → {a.effective_time.strftime('%H:%M')}  ⏱ +{a.delay_minutes}m"
+    return "✅ On Time"
+
+
 def format_tgv_message(
     trains: list[Arrival],
     trains_ok: bool,
     *,
     next_tgv: Arrival | None = None,
+    replacement: list[Arrival] | None = None,
     title: str = "🚄 <b>TGV — Gare Centrale</b>",
 ) -> str:
     """Standalone TGV message (message 2 of 3)."""
@@ -454,19 +485,20 @@ def format_tgv_message(
     ts = now.strftime("%H:%M")
     if not trains_ok:
         return f"{title}\n🕐 {ts}\n\n  ⚠️ Data unavailable"
+    coaches = replacement or []
     tgvs = [a for a in trains if a.is_tgv]
     if not tgvs:
+        head = [title, f"🕐 {ts}", "", "  No TGV in this window"]
         if next_tgv:
-            nxt = _format_next_tgv_line(next_tgv)
-            return f"{title}\n🕐 {ts}\n\n  No TGV in this window\n\n{nxt}"
-        return f"{title}\n🕐 {ts}\n\n  No TGV scheduled"
+            head += ["", _format_next_tgv_line(next_tgv)]
+        return "\n".join(head + _replacement_block(coaches))
     lines = [title, f"🕐 {ts}", f"({len(tgvs)} TGV)", ""]
     for a in tgvs:
         lines.append(_format_tgv_board_line(a))
     if next_tgv and next_tgv not in tgvs:
         lines.append("")
         lines.append(_format_next_tgv_line(next_tgv))
-    return "\n".join(lines)
+    return "\n".join(lines + _replacement_block(coaches))
 
 
 def format_taxi_tip(

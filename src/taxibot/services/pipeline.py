@@ -192,6 +192,7 @@ class ReportPipeline:
                 self._tgv.fetch_today(),
                 self._tgv.fetch_tomorrow(),
                 self._tgv.next_arrival(),
+                self._tgv.fetch_replacement_today(),
                 return_exceptions=True,
             )
             new_flights_today, flights_today_ok = _unpack(results[0], "flights/today")
@@ -209,6 +210,11 @@ class ReportPipeline:
                 logger.warning("tgv/next raised: %s", results[6])
             else:
                 self._next_tgv_any_day = None
+
+            # Replacement coach — empty except during the line closure, so it needs
+            # no date guard: the feed stops publishing it the day TGV resumes.
+            replacement, _ = _unpack(results[7], "tgv/replacement")
+            self._schedule_cache["tgv_replacement"] = (replacement, True)
 
             new_trains_today = _merge_trains(regional_today, tgv_today)
             new_trains_tomorrow = _merge_trains(regional_tomorrow, tgv_tomorrow)

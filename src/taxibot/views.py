@@ -172,10 +172,12 @@ async def build_soon_messages(pipeline) -> list[OutboundMessage]:
     next_tgv = _next_tgv_from_lists(trains, trains_tomorrow) or getattr(
         pipeline, "_next_tgv_any_day", None
     )
+    replacement, _ = _cached(pipeline, "tgv_replacement")
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,
         next_tgv=next_tgv,
+        replacement=replacement,
         title=f"🚄 <b>TGV arriving soon{_suffix(trains_rolled)}</b>",
     )
 
@@ -216,10 +218,12 @@ async def build_today_messages(pipeline) -> list[OutboundMessage]:
     next_tgv = _next_tgv_from_lists(trains, trains_tomorrow) or getattr(
         pipeline, "_next_tgv_any_day", None
     )
+    replacement, _ = _cached(pipeline, "tgv_replacement")
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,
         next_tgv=next_tgv,
+        replacement=replacement,
         title="🚄 <b>TGV today</b>",
     )
 

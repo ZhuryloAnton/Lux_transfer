@@ -59,6 +59,15 @@ _SNCF_GTFS_RT_URL = "https://proxy.transport.data.gouv.fr/resource/sncf-gtfs-rt-
 # SNCF's station id for Luxembourg. Used only to narrow the stop-point search.
 _LUX_STATION_CODE = "82001000"
 
+# SNCF encodes the mode in the stop-point id, e.g.
+# "StopPoint:OCECar à réservation-82001000".
+_COACH_STOP_MARKER = "car à réservation"
+
+# Deliberately NOT containing "TGV": Arrival.is_tgv is a substring test, and a
+# coach labelled "TGV Bus" would be counted as a TGV by every filter and appear on
+# the TGV board as though the train were running.
+_COACH_IDENTIFIER = "BUS"
+
 # Suffixes SNCF appends to origin names that add nothing for a taxi driver.
 _ORIGIN_SUFFIXES = (" Saint-Charles", " Saint-Roch", "-Ville", " Est", " Gare")
 
@@ -138,14 +147,24 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
         # The TGV stop point at Luxembourg, found by pattern rather than a
         # hardcoded id so a re-issued id does not silently empty the feature.
         tgv_stop_id = ""
+        coach_stop_id = ""
         stop_names: dict[str, str] = {}
         for row, idx in _stream_csv(z, "stops.txt"):
             sid = _cell(row, idx, "stop_id")
             if not sid:
                 continue
             stop_names[sid] = _cell(row, idx, "stop_name").strip()
-            if _LUX_STATION_CODE in sid and "TGV" in sid.upper():
+            if _LUX_STATION_CODE not in sid:
+                continue
+            if "TGV" in sid.upper():
                 tgv_stop_id = sid
+            elif _COACH_STOP_MARKER in sid.lower():
+                # "Car à réservation" — the reservation-only coach that replaces the
+                # TGV while the Thionville–Luxembourg line is closed. Identified as
+                # the replacement by the data, not by assumption: its operating
+                # dates end 20260823 and TGV's begin 20260824, with zero overlap,
+                # and a TGV reaches Metz ~15 min before each coach leaves.
+                coach_stop_id = sid
         if not tgv_stop_id:
             logger.warning("SNCF GTFS: no TGV stop point found for Luxembourg (%s)", _LUX_STATION_CODE)
             return {}
@@ -153,12 +172,19 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
         # Pass 1 over stop_times: which trips call at Luxembourg, and when.
         # Narrowing to these ~200 trips first is what keeps every later structure
         # small — collecting first/last for all ~48k trips was the memory hog.
-        lux_arrival: dict[str, str] = {}
+        watched = {tgv_stop_id}
+        if coach_stop_id:
+            watched.add(coach_stop_id)
+
+        # tid -> (stop_id it calls at, arrival time). Keeping the stop id is what
+        # lets one pass serve both the TGV and the replacement coach.
+        lux_arrival: dict[str, tuple[str, str]] = {}
         for row, idx in _stream_csv(z, "stop_times.txt"):
-            if _cell(row, idx, "stop_id") == tgv_stop_id:
+            sid = _cell(row, idx, "stop_id")
+            if sid in watched:
                 tid = _cell(row, idx, "trip_id")
                 if tid:
-                    lux_arrival[tid] = _cell(row, idx, "arrival_time")
+                    lux_arrival[tid] = (sid, _cell(row, idx, "arrival_time"))
 
         if not lux_arrival:
             logger.warning("SNCF GTFS: no trips call at %s", tgv_stop_id)
@@ -201,28 +227,43 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
             if sid in wanted_services:
                 service_dates.setdefault(sid, set()).add(_cell(row, idx, "date"))
 
-    # Keep only trips that TERMINATE at the Luxembourg TGV stop point.
+    # Keep only trips that TERMINATE at the Luxembourg stop point they call at.
     index: dict[str, list[tuple[str, str, str, str]]] = {}
-    for tid, arr_time in lux_arrival.items():
-        if last.get(tid, (0, ""))[1] != tgv_stop_id:
+    coach_index: dict[str, list[tuple[str, str, str, str]]] = {}
+    for tid, (stop_id, arr_time) in lux_arrival.items():
+        if last.get(tid, (0, ""))[1] != stop_id:
             continue
         origin_seq = first.get(tid)
-        if origin_seq is None or origin_seq[1] == tgv_stop_id:
+        if origin_seq is None or origin_seq[1] == stop_id:
             continue  # starts here: an outbound departure, not an arrival
         origin_name = _clean_origin(stop_names.get(origin_seq[1], "?"))
         entry = (arr_time, origin_name, origin_seq[2], tid)
+        target = coach_index if stop_id == coach_stop_id else index
         for date in service_dates.get(trip_service.get(tid, ""), ()):
-            index.setdefault(date, []).append(entry)
+            target.setdefault(date, []).append(entry)
 
-    for rows in index.values():
-        rows.sort()
+    for bucket in (index, coach_index):
+        for rows in bucket.values():
+            rows.sort()
     dates = sorted(index)
     logger.info(
         "SNCF GTFS: %d terminating TGV arrivals at Luxembourg across %d dates (%s..%s)",
         sum(len(v) for v in index.values()), len(dates),
         dates[0] if dates else "-", dates[-1] if dates else "-",
     )
-    return {"by_date": index, "tgv_stop_id": tgv_stop_id}
+    coach_dates = sorted(coach_index)
+    if coach_dates:
+        logger.info(
+            "SNCF GTFS: %d replacement-coach arrivals across %d dates (%s..%s)",
+            sum(len(v) for v in coach_index.values()), len(coach_dates),
+            coach_dates[0], coach_dates[-1],
+        )
+    return {
+        "by_date": index,
+        "tgv_stop_id": tgv_stop_id,
+        "coach_by_date": coach_index,
+        "coach_stop_id": coach_stop_id,
+    }
 
 
 def _parse_rt(raw: bytes, tgv_stop_id: str) -> dict[str, int]:
@@ -384,9 +425,26 @@ class SNCFTrainSource:
                     return arrival
         return None
 
-    async def _arrivals_for(self, day: datetime) -> list[Arrival]:
+    async def fetch_replacement_today(self) -> list[Arrival]:
+        """Replacement-coach arrivals still to come today.
+
+        Empty whenever the coach is not running, so this needs no date guard: the
+        block disappears by itself when TGV resumes, because the feed stops
+        publishing the coach on the same day TGV restarts.
+        """
+        now = datetime.now(tz=_LUX_TZ)
+        arrivals = await self._arrivals_for(now, key="coach_by_date", identifier=_COACH_IDENTIFIER)
+        return [a for a in arrivals if a.effective_time >= now]
+
+    async def _arrivals_for(
+        self,
+        day: datetime,
+        *,
+        key: str = "by_date",
+        identifier: str = "TGV",
+    ) -> list[Arrival]:
         data = await self._load()
-        rows = data.get("by_date", {}).get(day.strftime("%Y%m%d"), [])
+        rows = data.get(key, {}).get(day.strftime("%Y%m%d"), [])
         if not rows:
             return []
         delays = await self._current_delays()
@@ -413,7 +471,7 @@ class SNCFTrainSource:
                 Arrival(
                     transport_type=TransportType.TRAIN,
                     scheduled_time=scheduled,
-                    identifier="TGV",
+                    identifier=identifier,
                     origin=origin,
                     status="scheduled",
                     delay_minutes=delays.get(tid, 0),
