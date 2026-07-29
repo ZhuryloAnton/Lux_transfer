@@ -167,7 +167,11 @@ async def build_soon_messages(pipeline) -> list[OutboundMessage]:
     # next_tgv is the explicit "nothing today, here is the next one" line. Without
     # it the TGV block just says "no TGV" and the driver cannot tell whether that
     # means later tonight, tomorrow morning, or a suspended service.
-    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow)
+    # Prefer today/tomorrow — those carry live GTFS-RT delays. Fall back to the
+    # feed-wide lookup so a suspension still reports when service resumes.
+    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow) or getattr(
+        pipeline, "_next_tgv_any_day", None
+    )
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,
@@ -207,7 +211,11 @@ async def build_today_messages(pipeline) -> list[OutboundMessage]:
     # "Today" deliberately does not roll its lists into tomorrow — it means today.
     # But the next-TGV line may point at tomorrow, so an empty evening board still
     # tells you when the next one is.
-    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow)
+    # Prefer today/tomorrow — those carry live GTFS-RT delays. Fall back to the
+    # feed-wide lookup so a suspension still reports when service resumes.
+    next_tgv = _next_tgv_from_lists(trains, trains_tomorrow) or getattr(
+        pipeline, "_next_tgv_any_day", None
+    )
     tgv_text = format_tgv_message(
         upcoming_trains,
         tr_ok,

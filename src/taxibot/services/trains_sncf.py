@@ -357,6 +357,33 @@ class SNCFTrainSource:
     async def fetch_tomorrow(self) -> list[Arrival]:
         return await self._arrivals_for(datetime.now(tz=_LUX_TZ) + timedelta(days=1))
 
+    async def next_arrival(self, after: datetime | None = None) -> Arrival | None:
+        """The next TGV arrival on any date the feed covers, however far out.
+
+        ``_next_tgv_from_lists`` only inspects today and tomorrow, so during a long
+        suspension it returns ``None`` and the TGV block can only say "no TGV" —
+        indistinguishable from a broken feed. Paris–Luxembourg is currently paused
+        for 26 days, so scanning the whole index lets the message name the real
+        resume date, read from the feed rather than hardcoded where it would rot.
+
+        Dates are scanned in order and the first match wins, so the cost is one
+        day's rows in the normal case.
+        """
+        now = after or datetime.now(tz=_LUX_TZ)
+        data = await self._load()
+        today_key = now.strftime("%Y%m%d")
+        for date in sorted(data.get("by_date", {})):
+            if date < today_key:
+                continue
+            try:
+                day = _LUX_TZ.localize(datetime.strptime(date, "%Y%m%d"))
+            except ValueError:
+                continue
+            for arrival in await self._arrivals_for(day):
+                if arrival.effective_time >= now:
+                    return arrival
+        return None
+
     async def _arrivals_for(self, day: datetime) -> list[Arrival]:
         data = await self._load()
         rows = data.get("by_date", {}).get(day.strftime("%Y%m%d"), [])

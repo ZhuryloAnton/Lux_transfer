@@ -164,6 +164,10 @@ class ReportPipeline:
         self._schedule_cache: dict[str, tuple[list[Arrival], bool]] = {}
         self._schedule_lock = asyncio.Lock()
 
+        # Next TGV on any date the SNCF feed covers — may be weeks out during a
+        # service suspension, which is exactly when today/tomorrow give nothing.
+        self._next_tgv_any_day: Arrival | None = None
+
     async def _ensure_realtime_fresh(self) -> None:
         """Load real-time delays if cache is stale (so reports show up-to-date delays)."""
         if self._realtime is not None:
@@ -187,6 +191,7 @@ class ReportPipeline:
                 self._trains.fetch_tomorrow(),
                 self._tgv.fetch_today(),
                 self._tgv.fetch_tomorrow(),
+                self._tgv.next_arrival(),
                 return_exceptions=True,
             )
             new_flights_today, flights_today_ok = _unpack(results[0], "flights/today")
@@ -195,6 +200,15 @@ class ReportPipeline:
             regional_tomorrow, trains_tomorrow_ok = _unpack(results[3], "trains/tomorrow")
             tgv_today, tgv_today_ok = _unpack(results[4], "tgv/today")
             tgv_tomorrow, tgv_tomorrow_ok = _unpack(results[5], "tgv/tomorrow")
+
+            # The next TGV on *any* covered date, so an empty board can name the
+            # resume date during a suspension instead of just saying "no TGV".
+            if isinstance(results[6], Arrival):
+                self._next_tgv_any_day = results[6]
+            elif isinstance(results[6], BaseException):
+                logger.warning("tgv/next raised: %s", results[6])
+            else:
+                self._next_tgv_any_day = None
 
             new_trains_today = _merge_trains(regional_today, tgv_today)
             new_trains_tomorrow = _merge_trains(regional_tomorrow, tgv_tomorrow)
