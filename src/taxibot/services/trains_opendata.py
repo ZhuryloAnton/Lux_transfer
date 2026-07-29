@@ -40,6 +40,11 @@ _TRAIN_TYPES = frozenset({
 
 _JOURNEY_RE = re.compile(r'<Journey ([^/]*)/?>')
 
+# Arrival.is_cancelled tests for "CX", the code the airport feed uses; reusing it
+# keeps one cancellation concept across both transport types.
+_CANCELLED = "CX"
+_CANCEL_TOKENS = frozenset({"cancel", "cancelled", "canceled"})
+
 
 def _attr(text: str, name: str) -> str:
     """Extract attribute value from XML tag attributes string."""
@@ -90,13 +95,24 @@ def _parse_journey(attrs: str, base_date: datetime) -> Arrival | None:
     else:
         dt = base_date.replace(hour=h, minute=m, second=0, microsecond=0)
 
-    # Parse delay
+    # Parse delay. HAFAS is loose about this field — values seen on the live board
+    # include "0", "3", "+ 5" (sign *and* space), "-" (no data) and "cancel".
+    # A bare int() rejects the last two, and the old bare `except ValueError: pass`
+    # turned both into "no delay": a genuine 5-minute delay was dropped, and a
+    # cancelled train rendered as "✅ On Time" — which sends a driver to meet a
+    # train that is not coming.
     delay_minutes = 0
-    if delay_str and delay_str != "-":
+    status = "scheduled"
+    normalised = delay_str.replace(" ", "").lstrip("+")
+    if normalised.lower() in _CANCEL_TOKENS:
+        status = _CANCELLED
+    elif normalised and normalised != "-":
         try:
-            delay_minutes = max(0, int(delay_str))
+            delay_minutes = max(0, int(normalised))
         except ValueError:
-            pass
+            # Still swallowed, but no longer silent — an unknown token is a feed
+            # change we want to find in the logs rather than mistake for on-time.
+            logger.debug("stboard: unparsable delay %r", delay_str)
 
     # Parse train type from prod="TGV 2816#TGV" or "RB  5634#RB"
     prod_parts = prod_str.split("#")
@@ -122,7 +138,7 @@ def _parse_journey(attrs: str, base_date: datetime) -> Arrival | None:
         scheduled_time=dt,
         identifier=train_type,
         origin=origin_clean,
-        status="scheduled",
+        status=status,
         delay_minutes=delay_minutes,
         paris_departure=paris_dep,
     )
