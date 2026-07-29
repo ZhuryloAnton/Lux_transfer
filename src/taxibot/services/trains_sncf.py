@@ -149,6 +149,7 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
         tgv_stop_id = ""
         coach_stop_id = ""
         stop_names: dict[str, str] = {}
+        lux_coords: dict[str, tuple[str, str]] = {}
         for row, idx in _stream_csv(z, "stops.txt"):
             sid = _cell(row, idx, "stop_id")
             if not sid:
@@ -156,6 +157,7 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
             stop_names[sid] = _cell(row, idx, "stop_name").strip()
             if _LUX_STATION_CODE not in sid:
                 continue
+            lux_coords[sid] = (_cell(row, idx, "stop_lat"), _cell(row, idx, "stop_lon"))
             if "TGV" in sid.upper():
                 tgv_stop_id = sid
             elif _COACH_STOP_MARKER in sid.lower():
@@ -258,11 +260,19 @@ def _parse_gtfs(raw: bytes) -> dict[str, Any]:
             sum(len(v) for v in coach_index.values()), len(coach_dates),
             coach_dates[0], coach_dates[-1],
         )
+    lat, lon = lux_coords.get(coach_stop_id, ("", ""))
     return {
         "by_date": index,
         "tgv_stop_id": tgv_stop_id,
         "coach_by_date": coach_index,
         "coach_stop_id": coach_stop_id,
+        # Where the coach lands, straight from the feed rather than hardcoded — if
+        # SNCF ever publishes a distinct coach coordinate it will follow along.
+        # Today every mode at this station shares the parent-station centroid, so
+        # this is the station, not the kerb. See format_replacement_location().
+        "coach_stop_name": stop_names.get(coach_stop_id, ""),
+        "coach_stop_lat": lat,
+        "coach_stop_lon": lon,
     }
 
 
@@ -424,6 +434,15 @@ class SNCFTrainSource:
                 if arrival.effective_time >= now:
                     return arrival
         return None
+
+    async def replacement_location(self) -> dict[str, str]:
+        """Where the replacement coach arrives, as far as the feed knows."""
+        data = await self._load()
+        return {
+            "name": data.get("coach_stop_name", ""),
+            "lat": data.get("coach_stop_lat", ""),
+            "lon": data.get("coach_stop_lon", ""),
+        }
 
     async def fetch_replacement_today(self) -> list[Arrival]:
         """Replacement-coach arrivals still to come today.

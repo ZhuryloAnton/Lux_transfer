@@ -27,6 +27,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from taxibot.formatters.report import (
     format_flights_page,
+    format_replacement_location,
     format_taxi_tip,
     format_tgv_message,
 )
@@ -130,6 +131,33 @@ def _suffix(rolled: bool) -> str:
     return " (tomorrow)" if rolled else ""
 
 
+def _assemble(
+    flights_text: str,
+    tgv_text: str,
+    tip_text: str,
+    replacement: list[Arrival],
+    pipeline,
+    keyboard: InlineKeyboardMarkup | None = None,
+) -> list[OutboundMessage]:
+    """Flights, TGV, tip — plus a coach-location message only while it applies.
+
+    The location is its own message so it can be forwarded or pinned on its own:
+    "where do I go" is a different question from "what is arriving", and a driver
+    wants it without the surrounding board.
+    """
+    messages = [
+        OutboundMessage(flights_text, keyboard),
+        OutboundMessage(tgv_text),
+    ]
+    location_text = format_replacement_location(
+        replacement, getattr(pipeline, "_replacement_location", {})
+    )
+    if location_text:
+        messages.append(OutboundMessage(location_text))
+    messages.append(OutboundMessage(tip_text))
+    return messages
+
+
 # ── Views ─────────────────────────────────────────────────────────────────────
 
 async def build_soon_messages(pipeline) -> list[OutboundMessage]:
@@ -183,11 +211,7 @@ async def build_soon_messages(pipeline) -> list[OutboundMessage]:
 
     tip_text = format_taxi_tip(upcoming_flights, upcoming_trains, fl_ok, tr_ok)
 
-    return [
-        OutboundMessage(flights_text),
-        OutboundMessage(tgv_text),
-        OutboundMessage(tip_text),
-    ]
+    return _assemble(flights_text, tgv_text, tip_text, replacement, pipeline)
 
 
 async def build_today_messages(pipeline) -> list[OutboundMessage]:
@@ -229,11 +253,7 @@ async def build_today_messages(pipeline) -> list[OutboundMessage]:
 
     tip_text = format_taxi_tip(upcoming_flights, upcoming_trains, fl_ok, tr_ok)
 
-    return [
-        OutboundMessage(flights_text, keyboard),
-        OutboundMessage(tgv_text),
-        OutboundMessage(tip_text),
-    ]
+    return _assemble(flights_text, tgv_text, tip_text, replacement, pipeline, keyboard)
 
 
 async def build_tomorrow_messages(pipeline) -> list[OutboundMessage]:

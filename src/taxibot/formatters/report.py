@@ -472,6 +472,55 @@ def _delay_or_status(a: Arrival) -> str:
     return "✅ On Time"
 
 
+def format_replacement_location(
+    coaches: list[Arrival],
+    location: dict[str, str] | None = None,
+) -> str:
+    """Where to meet the TGV replacement coach — its own message.
+
+    Deliberately explicit about what is *not* known. The SNCF feed gives every
+    mode at this station the same parent-station centroid, so it locates the
+    station and not the kerb. CFL names "Luxembourg (Gare Rocade)" for the L90/L91/
+    L92 regional replacements but names no stop at all for the TGV coach, so the
+    exact stand is unpublished.
+
+    Guessing would be worse than useless here: sending a driver to the wrong side
+    of the station wastes the trip that this message exists to win. So it states
+    the likely stand, flags it as unconfirmed, and links the operator's own notice.
+    """
+    if not coaches:
+        return ""
+    loc = location or {}
+    name = (loc.get("name") or "Luxembourg").strip()
+    # GTFS pads coordinates ("6.134722000"); trim so the line stays readable.
+    def _coord(raw: str) -> str:
+        try:
+            return f"{float(raw):.5f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            return ""
+
+    lat, lon = _coord(loc.get("lat") or ""), _coord(loc.get("lon") or "")
+
+    first = min(coaches, key=lambda a: a.effective_time)
+    lines = [
+        "📍 <b>Where to meet the TGV coach</b>",
+        f"  Station: {escape(name)}",
+    ]
+    if lat and lon:
+        lines.append(f'  <a href="https://maps.google.com/?q={lat},{lon}">Open in Maps</a>  ({lat}, {lon})')
+    lines += [
+        "",
+        "  ⚠️ Likely <b>Gare Rocade</b> (the coach stands), not",
+        "  the main hall — CFL lists Gare Rocade for the",
+        "  L90/L91/L92 replacement buses but publishes no",
+        "  stop for the TGV coach, so this is unconfirmed.",
+        "",
+        f"  Next coach: {first.effective_time.strftime('%H:%M')} from {escape(first.origin)}",
+        '  <a href="https://www.cfl.lu/fr-fr/news/detail/travaux-cfl">CFL works notice</a>',
+    ]
+    return "\n".join(lines)
+
+
 def format_tgv_message(
     trains: list[Arrival],
     trains_ok: bool,

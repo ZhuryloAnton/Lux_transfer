@@ -168,6 +168,10 @@ class ReportPipeline:
         # service suspension, which is exactly when today/tomorrow give nothing.
         self._next_tgv_any_day: Arrival | None = None
 
+        # Where the replacement coach lands. Populated lazily, only while the coach
+        # is actually running.
+        self._replacement_location: dict[str, str] = {}
+
     async def _ensure_realtime_fresh(self) -> None:
         """Load real-time delays if cache is stale (so reports show up-to-date delays)."""
         if self._realtime is not None:
@@ -215,6 +219,12 @@ class ReportPipeline:
             # no date guard: the feed stops publishing it the day TGV resumes.
             replacement, _ = _unpack(results[7], "tgv/replacement")
             self._schedule_cache["tgv_replacement"] = (replacement, True)
+            if replacement and not self._replacement_location:
+                # Static per feed, so fetch it only once and only when it matters.
+                try:
+                    self._replacement_location = await self._tgv.replacement_location()
+                except Exception as exc:
+                    logger.warning("tgv/replacement location failed: %s", exc)
 
             new_trains_today = _merge_trains(regional_today, tgv_today)
             new_trains_tomorrow = _merge_trains(regional_tomorrow, tgv_tomorrow)
