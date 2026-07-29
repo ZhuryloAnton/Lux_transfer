@@ -120,8 +120,16 @@ def format_tomorrow_report(r: Report) -> str:
 
 
 def _format_flight_line(a: Arrival) -> str:
-    """Format a single flight in flight-board style (2 lines for mobile)."""
+    """Format a single flight in flight-board style (2 lines for mobile).
+
+    The leading time is the **effective** arrival, not the scheduled one. The list
+    is sorted by effective time, so leading with the schedule made the column read
+    as unsorted — a flight scheduled 11:15 but 19 minutes late correctly sits after
+    one scheduled 11:25, and showing "11:15" there looks like a bug. The scheduled
+    time moves into the delay note, where it is context rather than the anchor.
+    """
     sched = a.scheduled_time.strftime("%H:%M")
+    actual = a.effective_time.strftime("%H:%M")
     ident = escape(a.identifier)
     origin = escape(a.origin)
 
@@ -132,19 +140,51 @@ def _format_flight_line(a: Arrival) -> str:
         )
 
     if a.delay_minutes >= 5:
-        est = a.effective_time.strftime("%H:%M")
         return (
             f"  {ident} ← {origin}\n"
-            f"  {sched} → {est}  ⏱ +{a.delay_minutes}m"
+            f"  {actual}  ⏱ +{a.delay_minutes}m  (was {sched})"
         )
 
     return (
         f"  {ident} ← {origin}\n"
-        f"  {sched}  ✅ On Time"
+        f"  {actual}  ✅ On Time"
     )
 
 
+def _format_flight_compact(a: Arrival) -> str:
+    """One-line form for the tail of the list.
+
+    Wrapped in ``<code>`` so Telegram renders it monospaced and the time and
+    flight-number columns actually line up — in the proportional font the times
+    stagger and the point of a compact list (scanning down one column) is lost.
+    """
+    # Effective time, for the same reason as _format_flight_line: this column is
+    # meant to be scanned top to bottom, so it has to increase monotonically.
+    actual = a.effective_time.strftime("%H:%M")
+    ident = a.identifier[:7].ljust(7)
+    origin = a.origin[:22]
+
+    if a.is_cancelled:
+        status = "CX"
+    elif a.delay_minutes >= 5:
+        status = f"+{a.delay_minutes}m"
+    else:
+        status = "ok"
+
+    # escape() after padding: escaping first would let "&" expand to "&amp;" and
+    # throw the column alignment out by four characters.
+    return f"<code>{escape(f'{actual}  {ident} {origin:<22} {status}')}</code>"
+
+
 # ── Paginated flights ─────────────────────────────────────────────────────────
+
+#: How many flights get the roomy two-line treatment with dividers. The rest fall
+#: back to compact one-liners — the near arrivals are the ones being acted on, and
+#: 20 fully-spaced entries is a lot of scrolling for the tail nobody is driving to
+#: yet.
+_FLIGHT_DETAIL_COUNT = 8
+
+_FLIGHT_DIVIDER = "  ───────────────"
 
 def _flights_header(flights: list[Arrival]) -> str:
     active = [a for a in flights if not a.is_cancelled]
@@ -178,14 +218,27 @@ def format_flights_page(
     count_label = _flights_header(flights)
     lines = [
         header_title,
-        f"🕐 {ts}",
-        f"({count_label})",
+        f"🕐 {ts}  ·  {count_label}",
     ]
     if total_pages > 1:
         lines.append(f"📄 Page {page + 1}/{total_pages}")
     lines.append("")
-    for a in page_flights:
+
+    # Near arrivals get room and dividers; the tail stays a scannable column.
+    detailed = page_flights[:_FLIGHT_DETAIL_COUNT]
+    remainder = page_flights[_FLIGHT_DETAIL_COUNT:]
+
+    for i, a in enumerate(detailed):
+        if i:
+            lines.append(_FLIGHT_DIVIDER)
         lines.append(_format_flight_line(a))
+
+    if remainder:
+        lines.append("")
+        lines.append(f"<b>Later</b> ({len(remainder)})")
+        for a in remainder:
+            lines.append(_format_flight_compact(a))
+
     return "\n".join(lines), total_pages
 
 
