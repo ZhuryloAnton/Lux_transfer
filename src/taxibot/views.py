@@ -3,7 +3,7 @@
 The bug this module exists to kill: the "next 3 hours" content was written twice
 — once in ``handlers._handle_now`` (three messages, paginated, sent as replies)
 and once in ``pipeline.now_report`` (a single combined string, used by the
-3-hourly job). They drifted, so the automatic push and the button showed
+hourly job). They drifted, so the automatic push and the button showed
 different things.
 
 Now both paths call the same builder here and only differ in delivery:
@@ -163,7 +163,7 @@ def _assemble(
 async def build_soon_messages(pipeline) -> list[OutboundMessage]:
     """"Arrives soon": the next ``SOON_FLIGHT_COUNT`` flights + remaining TGVs + tip.
 
-    No pagination by design — this is the view the 3-hourly push sends, and a
+    No pagination by design — this is the view the hourly push sends, and a
     pushed message with ◀/▶ buttons would go stale as soon as the cache moved on.
     """
     await ensure_cache(pipeline)
@@ -212,6 +212,33 @@ async def build_soon_messages(pipeline) -> list[OutboundMessage]:
     tip_text = format_taxi_tip(upcoming_flights, upcoming_trains, fl_ok, tr_ok)
 
     return _assemble(flights_text, tgv_text, tip_text, replacement, pipeline)
+
+
+async def build_fresh_soon_messages(pipeline) -> list[OutboundMessage]:
+    """"Update": re-download schedule and live delays now, then the soon view.
+
+    The regular buttons read a cache that can be up to ``realtime_refresh_seconds``
+    old. This one forces both refreshes first so the driver gets the latest data
+    without waiting for the next background refresh or the hourly push. Bounded
+    by the same timeout as the cold-cache warmup — on a slow feed we answer with
+    what is cached rather than hang.
+    """
+    try:
+        await asyncio.wait_for(
+            _refresh_all(pipeline), timeout=_CACHE_WARMUP_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        logger.warning("forced refresh timed out (%ds) — using existing cache", _CACHE_WARMUP_TIMEOUT)
+    except Exception:
+        logger.exception("forced refresh failed — using existing cache")
+    return await build_soon_messages(pipeline)
+
+
+async def _refresh_all(pipeline) -> None:
+    # Realtime first: refresh_schedule only reloads delays when they are stale,
+    # and "Update" must not show a delay that is up to 10 minutes old.
+    await pipeline.refresh_realtime()
+    await pipeline.refresh_schedule()
 
 
 async def build_today_messages(pipeline) -> list[OutboundMessage]:

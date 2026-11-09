@@ -12,6 +12,7 @@ from taxibot.core.http import close_session
 from taxibot.handlers import (
     BTN_SOON,
     BTN_TODAY,
+    BTN_UPDATE,
     cmd_flights,
     cmd_help,
     cmd_next_tgv,
@@ -67,7 +68,7 @@ def create_application(settings: Settings) -> Application:
 
     # re.escape: button labels are user-facing text, not regex. Without it a
     # label containing '.' or '(' would silently match the wrong things.
-    btn_pattern = "^(" + "|".join(re.escape(b) for b in (BTN_SOON, BTN_TODAY)) + ")$"
+    btn_pattern = "^(" + "|".join(re.escape(b) for b in (BTN_SOON, BTN_TODAY, BTN_UPDATE)) + ")$"
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex(btn_pattern),

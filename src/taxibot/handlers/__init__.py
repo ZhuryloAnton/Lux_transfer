@@ -20,6 +20,7 @@ from taxibot.core.text import split_message
 from taxibot.formatters.report import format_flights_page
 from taxibot.views import (
     OutboundMessage,
+    build_fresh_soon_messages,
     build_soon_messages,
     build_today_messages,
     build_tomorrow_messages,
@@ -33,9 +34,10 @@ logger = logging.getLogger(__name__)
 
 BTN_SOON  = "🔜 Arrives soon"
 BTN_TODAY = "📋 Today schedule"
+BTN_UPDATE = "🔄 Update"
 
 KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_SOON, BTN_TODAY]],
+    [[BTN_SOON, BTN_TODAY], [BTN_UPDATE]],
     resize_keyboard=True,
     one_time_keyboard=False,
 )
@@ -106,8 +108,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  ✈️ Flights — Luxembourg-Findel\n"
         "  🚄 TGV     — Gare Centrale\n\n"
         f"<b>{BTN_SOON}</b> — the next arrivals, at a glance\n"
-        f"<b>{BTN_TODAY}</b> — everything still to come today\n\n"
-        "You also get the “arrives soon” view automatically every few hours.",
+        f"<b>{BTN_TODAY}</b> — everything still to come today\n"
+        f"<b>{BTN_UPDATE}</b> — fetch the latest data right now\n\n"
+        "You also get the “arrives soon” view automatically every hour.",
         parse_mode="HTML",
         reply_markup=KEYBOARD,
     )
@@ -120,6 +123,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  The next 20 flights plus upcoming TGVs, with delays.\n\n"
         f"<b>{BTN_TODAY}</b>\n"
         "  Every remaining arrival today — page through with ◀ ▶.\n\n"
+        f"<b>{BTN_UPDATE}</b>\n"
+        "  Re-downloads flights, TGVs and delays now, then shows Arrives soon.\n\n"
         "<b>Commands</b>\n"
         "  /start     — show the keyboard\n"
         "  /report    — same as Arrives soon\n"
@@ -156,6 +161,14 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         update, context, build_soon_messages,
         "⏳ Checking what's arriving soon…",
         "❌ Could not load arrivals. Please try again in a moment.",
+    )
+
+
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _respond_with(
+        update, context, build_fresh_soon_messages,
+        "🔄 Updating — fetching the latest data…",
+        "❌ Could not update. Please try again in a moment.",
     )
 
 
@@ -259,6 +272,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cmd_report(update, context)
     elif text == BTN_TODAY:
         await cmd_today(update, context)
+    elif text == BTN_UPDATE:
+        await cmd_update(update, context)
 
 
 # ── Pagination ────────────────────────────────────────────────────────────────

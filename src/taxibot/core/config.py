@@ -53,7 +53,7 @@ class Settings:
     gtfs_rt_url: str = ""
     realtime_refresh_seconds: int = 600
     hafas_api_key: str = ""
-    report_interval_hours: int = 3
+    report_interval_hours: int = 1
     log_level: str = "INFO"
     # Overrides for the SNCF TGV feeds. Both default to the published open-data
     # URLs inside trains_sncf.py; set only if those move.
@@ -86,7 +86,7 @@ def get_settings() -> Settings:
         gtfs_rt_url=_env("GTFS_RT_URL"),
         realtime_refresh_seconds=_env_int("REALTIME_REFRESH_SECONDS", 600),
         hafas_api_key=_env("HAFAS_API_KEY"),
-        report_interval_hours=_env_int("REPORT_INTERVAL_HOURS", 3),
+        report_interval_hours=_env_int("REPORT_INTERVAL_HOURS", 1),
         log_level=log_level,
         sncf_gtfs_url=_env("SNCF_GTFS_URL"),
         sncf_gtfs_rt_url=_env("SNCF_GTFS_RT_URL"),
