@@ -10,8 +10,6 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 from taxibot.core.config import Settings
 from taxibot.core.http import close_session
 from taxibot.handlers import (
-    BTN_SOON,
-    BTN_TODAY,
     BTN_UPDATE,
     cmd_flights,
     cmd_help,
@@ -25,9 +23,11 @@ from taxibot.handlers import (
     cmd_tomorrow,
     handle_button,
     handle_page_callback,
+    handle_update_callback,
 )
 from taxibot.jobs import refresh_realtime_job, refresh_schedule_job, scheduled_report
 from taxibot.services import ReportPipeline
+from taxibot.views import UPDATE_CALLBACK
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def create_application(settings: Settings) -> Application:
 
     # re.escape: button labels are user-facing text, not regex. Without it a
     # label containing '.' or '(' would silently match the wrong things.
-    btn_pattern = "^(" + "|".join(re.escape(b) for b in (BTN_SOON, BTN_TODAY, BTN_UPDATE)) + ")$"
+    btn_pattern = "^(" + "|".join(re.escape(b) for b in (BTN_UPDATE,)) + ")$"
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex(btn_pattern),
@@ -76,6 +76,11 @@ def create_application(settings: Settings) -> Application:
         )
     )
 
+    # Inline 🔄 Update (channels, and under the hourly push). Registered before
+    # pagination, whose handler has no pattern and would swallow this callback.
+    app.add_handler(
+        CallbackQueryHandler(handle_update_callback, pattern=f"^{re.escape(UPDATE_CALLBACK)}$")
+    )
     # Pagination: ◀ Prev / Next ▶ inline buttons
     app.add_handler(CallbackQueryHandler(handle_page_callback))
 

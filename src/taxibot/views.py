@@ -68,6 +68,19 @@ def page_keyboard(page: int, total_pages: int, prefix: str) -> InlineKeyboardMar
     return InlineKeyboardMarkup([buttons]) if buttons else None
 
 
+# ── Update button ─────────────────────────────────────────────────────────────
+
+#: Callback data of the inline "🔄 Update" button.
+UPDATE_CALLBACK = "update"
+
+#: Inline twin of the reply-keyboard Update button. Channels cannot show a reply
+#: keyboard at all, so this is the only way to offer Update there; it also rides
+#: under the hourly push. Unlike ◀ ▶ it never goes stale — every press re-fetches.
+UPDATE_INLINE = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("🔄 Update", callback_data=UPDATE_CALLBACK)]]
+)
+
+
 # ── Cache ─────────────────────────────────────────────────────────────────────
 
 async def ensure_cache(pipeline) -> None:

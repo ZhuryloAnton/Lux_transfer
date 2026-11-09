@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 import pytz
@@ -17,8 +18,10 @@ from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from taxibot.core.text import split_message
+from taxibot.delivery import send_messages
 from taxibot.formatters.report import format_flights_page
 from taxibot.views import (
+    UPDATE_INLINE,
     OutboundMessage,
     build_fresh_soon_messages,
     build_soon_messages,
@@ -32,17 +35,31 @@ logger = logging.getLogger(__name__)
 
 # ── Keyboard ──────────────────────────────────────────────────────────────────
 
-BTN_SOON  = "🔜 Arrives soon"
-BTN_TODAY = "📋 Today schedule"
 BTN_UPDATE = "🔄 Update"
 
 KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_SOON, BTN_TODAY], [BTN_UPDATE]],
+    [[BTN_UPDATE]],
     resize_keyboard=True,
     one_time_keyboard=False,
 )
 
 _LUX_TZ = pytz.timezone("Europe/Luxembourg")
+
+#: Seconds between two inline-Update refreshes in one chat. In a channel every
+#: subscriber can press the button and each press posts to the whole channel.
+_UPDATE_COOLDOWN = 30
+
+
+def _keyboard(update: Update):
+    """Reply keyboard where Telegram shows one; inline Update in channels.
+
+    Channels cannot display a reply keyboard, so there the inline button is the
+    only way to offer Update.
+    """
+    chat = update.effective_chat
+    if chat is not None and chat.type == "channel":
+        return UPDATE_INLINE
+    return KEYBOARD
 
 
 # ── Delivery ──────────────────────────────────────────────────────────────────
@@ -55,9 +72,9 @@ async def _deliver(update: Update, messages: list[OutboundMessage]) -> None:
     """
     last = len(messages) - 1
     for i, msg in enumerate(messages):
-        markup = msg.reply_markup or (KEYBOARD if i == last else None)
+        markup = msg.reply_markup or (_keyboard(update) if i == last else None)
         for chunk in split_message(msg.text):
-            await update.message.reply_text(chunk, parse_mode="HTML", reply_markup=markup)
+            await update.effective_message.reply_text(chunk, parse_mode="HTML", reply_markup=markup)
 
 
 async def _respond_with(
@@ -75,16 +92,16 @@ async def _respond_with(
     """
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
+        await update.effective_message.reply_text("⚠️ Bot not ready yet, please try again.")
         return
 
-    placeholder = await update.message.reply_text(loading)
+    placeholder = await update.effective_message.reply_text(loading)
     try:
         messages = await builder(pipeline)
     except Exception:
         logger.exception("%s failed", getattr(builder, "__name__", "view"))
         await _safe_delete(placeholder)
-        await update.message.reply_text(failure, reply_markup=KEYBOARD)
+        await update.effective_message.reply_text(failure, reply_markup=_keyboard(update))
         return
 
     await _safe_delete(placeholder)
@@ -102,33 +119,28 @@ async def _safe_delete(message) -> None:
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "🚖 <b>TaxiBOT Luxembourg</b>\n\n"
         "Taxi demand forecasts for Luxembourg City:\n"
         "  ✈️ Flights — Luxembourg-Findel\n"
         "  🚄 TGV     — Gare Centrale\n\n"
-        f"<b>{BTN_SOON}</b> — the next arrivals, at a glance\n"
-        f"<b>{BTN_TODAY}</b> — everything still to come today\n"
-        f"<b>{BTN_UPDATE}</b> — fetch the latest data right now\n\n"
-        "You also get the “arrives soon” view automatically every hour.",
+        f"<b>{BTN_UPDATE}</b> — the next arrivals with the latest data\n\n"
+        "You also get this view automatically every hour.",
         parse_mode="HTML",
-        reply_markup=KEYBOARD,
+        reply_markup=_keyboard(update),
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "🚖 <b>TaxiBOT — Help</b>\n\n"
-        f"<b>{BTN_SOON}</b>\n"
-        "  The next 20 flights plus upcoming TGVs, with delays.\n\n"
-        f"<b>{BTN_TODAY}</b>\n"
-        "  Every remaining arrival today — page through with ◀ ▶.\n\n"
         f"<b>{BTN_UPDATE}</b>\n"
-        "  Re-downloads flights, TGVs and delays now, then shows Arrives soon.\n\n"
+        "  Re-downloads flights, TGVs and delays now, then shows the next\n"
+        "  20 flights plus upcoming TGVs.\n\n"
         "<b>Commands</b>\n"
         "  /start     — show the keyboard\n"
-        "  /report    — same as Arrives soon\n"
-        "  /today     — same as Today schedule\n"
+        "  /report    — next arrivals (cached data)\n"
+        "  /today     — everything still to come today\n"
         "  /tomorrow  — tomorrow's schedule\n"
         "  /flights   — flights only\n"
         "  /tgv       — all TGVs today\n"
@@ -136,7 +148,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /status    — bot health check\n"
         "  /help      — this message",
         parse_mode="HTML",
-        reply_markup=KEYBOARD,
+        reply_markup=_keyboard(update),
     )
 
 
@@ -144,7 +156,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     now = datetime.now(tz=_LUX_TZ)
     pipeline = context.bot_data.get("pipeline")
     cached = "yes" if pipeline is not None and pipeline._cache_has_today() else "no"
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"✅ <b>TaxiBOT is running</b>\n"
         f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
         f"📡 Flights : lux-airport.lu API\n"
@@ -152,7 +164,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"📍 Station : Gare Centrale Luxembourg\n"
         f"💾 Schedule cached: {cached}",
         parse_mode="HTML",
-        reply_markup=KEYBOARD,
+        reply_markup=_keyboard(update),
     )
 
 
@@ -191,9 +203,9 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_flights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
+        await update.effective_message.reply_text("⚠️ Bot not ready yet, please try again.")
         return
-    placeholder = await update.message.reply_text("⏳ Loading flights…")
+    placeholder = await update.effective_message.reply_text("⏳ Loading flights…")
     try:
         await ensure_cache(pipeline)
         flights, ok = pipeline._schedule_cache.get("flights_today", ([], False))
@@ -203,13 +215,13 @@ async def cmd_flights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         await _safe_delete(placeholder)
         kb = page_keyboard(0, total_pages, "fl_list")
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb or KEYBOARD)
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb or _keyboard(update))
     except Exception:
         logger.exception("cmd_flights failed")
         await _safe_delete(placeholder)
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "❌ Could not load flights. Please try again in a moment.",
-            reply_markup=KEYBOARD,
+            reply_markup=_keyboard(update),
         )
 
 
@@ -250,29 +262,25 @@ async def _text_report(
     """For the pipeline methods that already return a finished string."""
     pipeline = context.bot_data.get("pipeline")
     if pipeline is None:
-        await update.message.reply_text("⚠️ Bot not ready yet, please try again.")
+        await update.effective_message.reply_text("⚠️ Bot not ready yet, please try again.")
         return
-    placeholder = await update.message.reply_text(loading)
+    placeholder = await update.effective_message.reply_text(loading)
     try:
         text = await call(pipeline)
         await _safe_delete(placeholder)
         for chunk in split_message(text):
-            await update.message.reply_text(chunk, parse_mode="HTML", reply_markup=KEYBOARD)
+            await update.effective_message.reply_text(chunk, parse_mode="HTML", reply_markup=_keyboard(update))
     except Exception:
         logger.exception("text report failed")
         await _safe_delete(placeholder)
-        await update.message.reply_text(failure, reply_markup=KEYBOARD)
+        await update.effective_message.reply_text(failure, reply_markup=_keyboard(update))
 
 
 # ── Keyboard buttons ──────────────────────────────────────────────────────────
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (update.message.text or "").strip()
-    if text == BTN_SOON:
-        await cmd_report(update, context)
-    elif text == BTN_TODAY:
-        await cmd_today(update, context)
-    elif text == BTN_UPDATE:
+    text = (update.effective_message.text or "").strip()
+    if text == BTN_UPDATE:
         await cmd_update(update, context)
 
 
@@ -301,6 +309,42 @@ _PAGE_SOURCES = {
     "fl_tomorrow": ("flights_tomorrow", True,  "✈️ <b>Tomorrow — Luxembourg-Findel</b>"),
     "fl_list":     ("flights_today",    False, "✈️ <b>Flights — Luxembourg-Findel</b>"),
 }
+
+
+async def handle_update_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline "🔄 Update" press — works in channels, groups and private chats.
+
+    Posts a fresh view to the chat the button lives in. Rate-limited per chat,
+    because in a channel any subscriber can press it.
+    """
+    query = update.callback_query
+    chat_id = query.message.chat_id if query.message else None
+    pipeline = context.bot_data.get("pipeline")
+    if chat_id is None or pipeline is None:
+        await _safe_answer(query, "⚠️ Bot not ready yet, please try again.")
+        return
+
+    last_by_chat = context.bot_data.setdefault("last_update_at", {})
+    now = time.monotonic()
+    if now - last_by_chat.get(chat_id, float("-inf")) < _UPDATE_COOLDOWN:
+        await _safe_answer(query, "Already updated just now.")
+        return
+    last_by_chat[chat_id] = now
+
+    await _safe_answer(query, "🔄 Updating…")
+    try:
+        messages = await build_fresh_soon_messages(pipeline)
+    except Exception:
+        logger.exception("Inline update failed (chat_id=%s)", chat_id)
+        return
+    await send_messages(context.bot, chat_id, messages, last_markup=UPDATE_INLINE)
+
+
+async def _safe_answer(query, text: str | None = None) -> None:
+    try:
+        await query.answer(text)
+    except Exception:
+        logger.warning("query.answer() failed", exc_info=True)
 
 
 async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

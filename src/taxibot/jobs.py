@@ -6,8 +6,8 @@ import logging
 
 from telegram.ext import ContextTypes
 
-from taxibot.core.text import split_message
-from taxibot.views import build_soon_messages
+from taxibot.delivery import send_messages
+from taxibot.views import UPDATE_INLINE, OutboundMessage, build_soon_messages
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,9 @@ async def scheduled_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     ``pipeline.now_report()`` — a different code path with a different format —
     which is why the two had drifted.
 
-    Inline keyboards are dropped here on purpose: a pushed message with ◀ ▶
-    buttons goes stale as soon as the schedule cache moves on, and tapping it
-    would silently re-render against different data.
+    ◀ ▶ keyboards are never pushed: they go stale as soon as the schedule cache
+    moves on. The inline Update button is attached instead — it re-fetches on
+    every press, and it is the only button a channel can show.
     """
     pipeline = context.bot_data.get("pipeline")
     chat_id = context.bot_data.get("chat_id")
@@ -36,15 +36,9 @@ async def scheduled_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Scheduled report: building the view failed.")
         return
 
-    sent = 0
-    for msg in messages:
-        for chunk in split_message(msg.text):
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
-                sent += 1
-            except Exception:
-                # One failed send must not abort the rest of the report.
-                logger.exception("Scheduled report: send failed for one chunk.")
+    # The view's own markups are dropped (see docstring); only Update is kept.
+    messages = [OutboundMessage(m.text) for m in messages]
+    sent = await send_messages(context.bot, chat_id, messages, last_markup=UPDATE_INLINE)
     logger.info("Scheduled report sent to chat_id=%s (%d messages).", chat_id, sent)
 
 
