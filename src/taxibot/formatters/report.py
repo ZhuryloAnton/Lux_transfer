@@ -10,6 +10,8 @@ from taxibot.core.text import escape
 from taxibot.models import Arrival, DemandPeak, Report, SourceStatus, TimeBlock
 
 _NO_DATA = "⚠️ Data temporarily unavailable."
+#: Marks a delay ("+12m") on every flight and train line.
+DELAY_ICON = "🍆"
 _SEP = "─────────────────────────"
 _FLIGHTS_PER_PAGE = 20
 
@@ -142,7 +144,7 @@ def _format_flight_line(a: Arrival) -> str:
     if a.delay_minutes >= 5:
         return (
             f"  {ident} ← {origin}\n"
-            f"  {actual}  ⏱ +{a.delay_minutes}m  (was {sched})"
+            f"  {actual}  {DELAY_ICON} +{a.delay_minutes}m  (was {sched})"
         )
 
     return (
@@ -269,7 +271,7 @@ def _line_next_train(next_train: Arrival | None) -> str:
         return ""
     when = _date_label(next_train.effective_time)
     t = next_train.effective_time.strftime("%H:%M")
-    delay = f" ⏱+{next_train.delay_minutes}m" if next_train.delay_minutes else ""
+    delay = f" {DELAY_ICON}+{next_train.delay_minutes}m" if next_train.delay_minutes else ""
     return f"🚆 <b>Next train:</b> {when} {t} — {escape(next_train.identifier)} from {escape(next_train.origin)}{delay}"
 
 
@@ -282,7 +284,7 @@ def format_next_train_report(next_train: Arrival | None) -> str:
         )
     when = _date_label(next_train.effective_time)
     t = next_train.effective_time.strftime("%H:%M")
-    delay = f" ⏱+{next_train.delay_minutes}m" if next_train.delay_minutes else ""
+    delay = f" {DELAY_ICON}+{next_train.delay_minutes}m" if next_train.delay_minutes else ""
     return (
         f"🚆 <b>Next train — Gare Centrale</b>\n\n"
         f"<b>{when}</b> {t} — {escape(next_train.identifier)} from {escape(next_train.origin)}{delay}"
@@ -327,7 +329,7 @@ def _format_tgv_board_line(a: Arrival) -> str:
 
     if a.delay_minutes >= 5:
         sched = a.scheduled_time.strftime("%H:%M")
-        return f"{route}\n  {sched} → {gare_time}  ⏱ +{a.delay_minutes}m"
+        return f"{route}\n  {sched} → {gare_time}  {DELAY_ICON} +{a.delay_minutes}m"
 
     return f"{route}\n  ✅ On Time"
 
@@ -521,7 +523,7 @@ def _delay_or_status(a: Arrival) -> str:
     if a.is_cancelled:
         return "❌ Cancelled"
     if a.delay_minutes >= 5:
-        return f"{a.scheduled_time.strftime('%H:%M')} → {a.effective_time.strftime('%H:%M')}  ⏱ +{a.delay_minutes}m"
+        return f"{a.scheduled_time.strftime('%H:%M')} → {a.effective_time.strftime('%H:%M')}  {DELAY_ICON} +{a.delay_minutes}m"
     return "✅ On Time"
 
 
